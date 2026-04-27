@@ -1,0 +1,304 @@
+import { logger } from "../logger";
+import { ClobPublicClient } from "../polymarket/clobPublicClient";
+import { DataClient } from "../polymarket/dataClient";
+import { GammaClient } from "../polymarket/gammaClient";
+import { StrategyRiskManager } from "../risk/strategyRiskManager";
+import { LocalDatabase } from "../storage/localDatabase";
+import { StrategyPaperTrader } from "../trading/strategyPaperTrader";
+import { Portfolio } from "../trading/portfolio";
+import { BinaryMarketCandidate, BotConfig, StrategyEngineState } from "../types";
+import { MakerArbitrageMode } from "./makerArbitrageMode";
+import { MarketMakingMode } from "./marketMakingMode";
+import { NetArbitrageScanner } from "./netArbitrageScanner";
+import { parseBinaryMarket, isCryptoUpDownMarket, isShortTermCryptoBinaryMarket, simulateOrderBookFill } from "./orderBookMath";
+import { StrategyStateStore } from "./strategyState";
+import { WhaleTracker } from "./whaleTracker";
+
+export class MultiStrategyEngine {
+  private readonly database = new LocalDatabase();
+  private readonly store: StrategyStateStore;
+  private readonly paperTrader: StrategyPaperTrader;
+  private readonly netArb: NetArbitrageScanner;
+  private readonly makerArb: MakerArbitrageMode;
+  private readonly marketMaking: MarketMakingMode;
+  private readonly whaleTracker: WhaleTracker;
+  private timers: NodeJS.Timeout[] = [];
+  private marketCache: BinaryMarketCandidate[] = [];
+  private lastMarketLoadAt = 0;
+
+  constructor(
+    private readonly deps: {
+      config: BotConfig;
+      gammaClient: GammaClient;
+      dataClient: DataClient;
+      clobClient: ClobPublicClient;
+      portfolio: Portfolio;
+      strategyRisk: StrategyRiskManager;
+    }
+  ) {
+    this.store = new StrategyStateStore(this.database, {
+      realTradingEnabled: deps.config.realTradingEnabled,
+      recorderEnabled: deps.config.recorderEnabled,
+      backtestMode: deps.config.backtestMode
+    });
+    this.paperTrader = new StrategyPaperTrader(this.store);
+    this.netArb = new NetArbitrageScanner(
+      deps.clobClient,
+      this.store,
+      this.paperTrader,
+      deps.strategyRisk,
+      deps.config
+    );
+    this.makerArb = new MakerArbitrageMode(deps.clobClient, this.store, this.paperTrader, deps.config);
+    this.marketMaking = new MarketMakingMode(deps.clobClient, this.store, this.paperTrader, deps.config);
+    this.whaleTracker = new WhaleTracker(deps.dataClient, deps.clobClient, this.store, this.paperTrader, deps.config);
+  }
+
+  async start(): Promise<void> {
+    logger.info("Starting multi-strategy paper engine.", {
+      realTradingEnabled: this.deps.config.realTradingEnabled,
+      realTradingRequiresUiConfirmation: this.deps.config.realTradingRequiresUiConfirmation
+    });
+
+    await this.runScannerTick();
+    await this.runWhaleTick();
+
+    this.timers.push(setInterval(() => this.runScannerTick().catch((error) => this.logError(error)), this.deps.config.arbitrageScanIntervalSeconds * 1000));
+    this.timers.push(setInterval(() => this.runMakerTick().catch((error) => this.logError(error)), this.deps.config.arbitrageScanIntervalSeconds * 1000));
+    this.timers.push(setInterval(() => this.runMarketMakingTick().catch((error) => this.logError(error)), this.deps.config.marketMakingIntervalSeconds * 1000));
+    this.timers.push(setInterval(() => this.runWhaleTick().catch((error) => this.logError(error)), this.deps.config.whalePollIntervalSeconds * 1000));
+    this.timers.push(setInterval(() => this.paperTrader.settleAgedTrades(this.deps.config.paperAutoSettleSeconds), 5_000));
+    this.timers.push(setInterval(() => this.runForcedCloseRiskCheck().catch((error) => this.logError(error)), 5_000));
+  }
+
+  stop(): void {
+    for (const timer of this.timers) clearInterval(timer);
+    this.timers = [];
+  }
+
+  getState(): StrategyEngineState {
+    return this.store.getState();
+  }
+
+  exportCsv(): string {
+    return this.database.exportPaperTradesCsv(this.getState());
+  }
+
+  setEmergencyStopped(stopped: boolean): void {
+    this.store.setEmergencyStopped(stopped);
+    logger.warn(stopped ? "Strategy emergency stop activated." : "Strategy emergency stop cleared.");
+  }
+
+  setRealTradingUiConfirmed(confirmed: boolean): void {
+    if (confirmed && !this.deps.config.realTradingEnabled) {
+      logger.warn("UI real-trading confirmation ignored because REAL_TRADING_ENABLED=false.");
+      this.store.setRealTradingUiConfirmed(false);
+      return;
+    }
+    this.store.setRealTradingUiConfirmed(confirmed);
+    logger.warn(confirmed ? "Real-trading UI confirmation set." : "Real-trading UI confirmation cleared.");
+  }
+
+  private async runScannerTick(): Promise<void> {
+    const candidates = await this.loadMarketCandidates();
+    await this.netArb.scan(candidates, this.deps.portfolio.getSnapshot());
+    await this.recordSnapshots(candidates.slice(0, 4));
+  }
+
+  private async runMakerTick(): Promise<void> {
+    const candidates = await this.loadMarketCandidates();
+    await this.makerArb.tick(candidates, this.deps.portfolio.getSnapshot());
+  }
+
+  private async runMarketMakingTick(): Promise<void> {
+    const candidates = await this.loadMarketCandidates();
+    await this.marketMaking.tick(candidates, this.deps.portfolio.getSnapshot());
+  }
+
+  private async runWhaleTick(): Promise<void> {
+    await this.whaleTracker.poll(this.deps.portfolio.getSnapshot());
+  }
+
+  private async loadMarketCandidates(): Promise<BinaryMarketCandidate[]> {
+    const cacheAge = Date.now() - this.lastMarketLoadAt;
+    if (this.marketCache.length > 0 && cacheAge < 60_000) return this.marketCache;
+
+    const markets = await this.deps.gammaClient.listMarkets({
+      active: true,
+      closed: false,
+      limit: 1000,
+      order: "volume24hr",
+      ascending: false
+    });
+
+    const orderBookMarkets = markets.filter(
+      (market) => market.active !== false && !market.closed && market.enableOrderBook !== false
+    );
+    const upDownCandidates = orderBookMarkets
+      .filter((market) => market.active !== false && !market.closed && market.enableOrderBook !== false)
+      .filter(isCryptoUpDownMarket)
+      .map(parseBinaryMarket)
+      .filter((candidate): candidate is BinaryMarketCandidate => Boolean(candidate))
+      .sort((a, b) => b.volumeUsd - a.volumeUsd);
+    const broaderCryptoCandidates = orderBookMarkets
+      .filter(isShortTermCryptoBinaryMarket)
+      .map(parseBinaryMarket)
+      .filter((candidate): candidate is BinaryMarketCandidate => Boolean(candidate))
+      .sort((a, b) => b.volumeUsd - a.volumeUsd);
+    const allLiquidCandidates = this.deps.config.strategyLabAllMarkets
+      ? orderBookMarkets
+          .map(parseBinaryMarket)
+          .filter((candidate): candidate is BinaryMarketCandidate => Boolean(candidate))
+          .filter((candidate) => candidate.volumeUsd >= this.deps.config.minMarketVolumeUsd)
+          .sort((a, b) => b.volumeUsd - a.volumeUsd)
+      : [];
+
+    const recentTradeCandidates = await this.loadCandidatesFromRecentTrades();
+    const byCondition = new Map<string, BinaryMarketCandidate>();
+    // Up/Down markets are preferred, then liquid paper-lab markets. The broad
+    // universe is paper-only and helps prove whether a >60% strategy is market
+    // structure edge or just crypto-specific noise.
+    for (const candidate of [...upDownCandidates, ...allLiquidCandidates, ...broaderCryptoCandidates, ...recentTradeCandidates]) {
+      byCondition.set(candidate.conditionId, candidate);
+    }
+
+    this.marketCache = [...byCondition.values()].sort((a, b) => b.volumeUsd - a.volumeUsd);
+
+    this.lastMarketLoadAt = Date.now();
+    logger.info("Multi-strategy market universe loaded.", {
+      cryptoUpDownMarkets: this.marketCache.length,
+      allLiquidCandidates: allLiquidCandidates.length,
+      gammaCandidates: broaderCryptoCandidates.length,
+      upDownCandidates: upDownCandidates.length,
+      recentTradeCandidates: recentTradeCandidates.length
+    });
+    return this.marketCache;
+  }
+
+  private async loadCandidatesFromRecentTrades(): Promise<BinaryMarketCandidate[]> {
+    const candidates: BinaryMarketCandidate[] = [];
+    const trades = await this.deps.dataClient.getTrades({ limit: 120, takerOnly: true });
+    const seen = new Set<string>();
+
+    for (const trade of trades) {
+      const text = `${trade.title ?? ""} ${trade.slug ?? ""}`.toLowerCase();
+      const looksCryptoUpDown =
+        (text.includes("bitcoin") || text.includes("btc") || text.includes("ethereum") || text.includes("eth")) &&
+        (text.includes("up or down") ||
+          text.includes("updown") ||
+          text.includes("above") ||
+          text.includes("below") ||
+          text.includes("reach") ||
+          text.includes("hit") ||
+          text.includes("dip"));
+      if (!looksCryptoUpDown || seen.has(trade.conditionId)) continue;
+
+      try {
+        const marketByToken = await this.deps.clobClient.getMarketByToken(trade.asset);
+        seen.add(trade.conditionId);
+        candidates.push({
+          conditionId: marketByToken.condition_id || trade.conditionId,
+          slug: trade.slug,
+          title: trade.title,
+          volumeUsd: Number(trade.price) * Number(trade.size),
+          liquidityUsd: 0,
+          yesTokenId: marketByToken.primary_token_id,
+          noTokenId: marketByToken.secondary_token_id,
+          yesOutcome: trade.outcomeIndex === 0 ? trade.outcome ?? "Up" : "Up",
+          noOutcome: trade.outcomeIndex === 1 ? trade.outcome ?? "Down" : "Down",
+          endDate: marketByToken.end_date_iso ?? marketByToken.end_date
+        });
+      } catch (error) {
+        logger.debug("Could not build crypto Up/Down candidate from recent trade.", {
+          market: trade.title,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    return candidates;
+  }
+
+  private async runForcedCloseRiskCheck(): Promise<void> {
+    const state = this.store.getState();
+    for (const trade of state.paperTrades) {
+      if (trade.closedAt || !trade.marketEndDate || trade.side === "ARBITRAGE_PAIR") continue;
+      const secondsToClose = (new Date(trade.marketEndDate).getTime() - Date.now()) / 1000;
+      if (!Number.isFinite(secondsToClose) || secondsToClose > this.deps.config.forcedRiskCheckSeconds) continue;
+
+      const exitTokenId = trade.side === "BUY" ? trade.yesTokenId : trade.noTokenId;
+      if (!exitTokenId) {
+        this.store.addDiagnostic({
+          id: `diag-close-risk-${trade.id}-${Date.now()}`,
+          tradeId: trade.id,
+          timestamp: new Date().toISOString(),
+          market: trade.marketTitle,
+          strategy: trade.strategy,
+          accepted: false,
+          rejectionReasons: ["Exit impossible / illiquid: missing token id for forced risk check."],
+          secondsToClose: Math.max(0, Math.round(secondsToClose)),
+          exitLiquidityPoor: true,
+          lossCause: "illiquidity",
+          createdAt: new Date().toISOString()
+        });
+        continue;
+      }
+
+      try {
+        const book = await this.deps.clobClient.getOrderBook(exitTokenId);
+        const exitFill = simulateSellExit(book, trade.shares);
+        if (exitFill.fillRate < 1) {
+          this.store.addDiagnostic({
+            id: `diag-close-risk-${trade.id}-${Date.now()}`,
+            tradeId: trade.id,
+            timestamp: new Date().toISOString(),
+            market: trade.marketTitle,
+            strategy: trade.strategy,
+            accepted: false,
+            rejectionReasons: ["Exit impossible / illiquid: visible bids cannot fully exit before close."],
+            orderBookDepthUsd: exitFill.depthUsd,
+            secondsToClose: Math.max(0, Math.round(secondsToClose)),
+            fillRate: exitFill.fillRate,
+            partialFill: exitFill.partial,
+            exitLiquidityPoor: true,
+            lossCause: "illiquidity",
+            createdAt: new Date().toISOString()
+          });
+        }
+      } catch (error) {
+        logger.warn("Forced close risk check could not read exit book.", {
+          tradeId: trade.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  }
+
+  private async recordSnapshots(candidates: BinaryMarketCandidate[]): Promise<void> {
+    if (!this.deps.config.recorderEnabled) return;
+
+    for (const candidate of candidates) {
+      try {
+        const [yesBook, noBook] = await Promise.all([
+          this.deps.clobClient.getOrderBook(candidate.yesTokenId),
+          this.deps.clobClient.getOrderBook(candidate.noTokenId)
+        ]);
+        this.database.recordOrderBookSnapshot({
+          market: candidate,
+          yesBook,
+          noBook
+        });
+      } catch (error) {
+        logger.debug("Recorder skipped order book snapshot.", { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  }
+
+  private logError(error: unknown): void {
+    logger.error("Multi-strategy engine tick failed.", { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+function simulateSellExit(book: Parameters<typeof simulateOrderBookFill>[0], shares: number) {
+  return simulateOrderBookFill(book, "SELL", shares, 0);
+}

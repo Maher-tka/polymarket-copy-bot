@@ -1,0 +1,50 @@
+{
+  "name": "polymarket-copy-bot",
+  "version": "0.1.0",
+  "description": "Version 1 paper trading copy bot for Polymarket public data.",
+  "private": true,
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "dashboard:dev": "vite --host 127.0.0.1 --port 5173",
+    "dashboard:build": "vite build",
+    "build": "npm run dashboard:build && tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "diagnose": "tsx src/diagnostics/diagnose.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@radix-ui/react-progress": "^1.1.8",
+    "@radix-ui/react-scroll-area": "^1.2.10",
+    "@radix-ui/react-separator": "^1.1.8",
+    "@radix-ui/react-slot": "^1.2.4",
+    "@radix-ui/react-tabs": "^1.1.13",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "lucide-react": "^1.11.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "recharts": "^3.8.1",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss-animate": "^1.0.7",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-react": "^6.0.1",
+    "autoprefixer": "^10.5.0",
+    "postcss": "^8.5.12",
+    "tailwindcss": "^3.4.19",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^8.0.10",
+    "vitest": "^4.1.5"
+  }
+}
