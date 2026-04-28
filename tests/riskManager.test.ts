@@ -11,6 +11,12 @@ const config = {
   maxTradeUsd: 2,
   maxTradeSizeUsdc: 2,
   maxMarketExposureUsd: 5,
+  maxMarketAllocationPct: 0.5,
+  maxTraderAllocationPct: 0.6,
+  maxTotalExposurePct: 0.8,
+  maxPositionSizePct: 0.5,
+  maxOneMarketExposureUsd: 5,
+  minRewardRiskRatio: 0.15,
   maxDailyLossUsd: 8,
   maxDailyLossUsdc: 8,
   maxOpenPositions: 1,
@@ -73,6 +79,7 @@ const portfolio: PortfolioSnapshot = {
   winRate: 0,
   maxDrawdownUsd: 0,
   maxDrawdownPct: 0,
+  exposure: emptyExposure(),
   openPositions: [],
   closedPositions: [],
   latestSignals: [],
@@ -89,6 +96,68 @@ describe("RiskManager", () => {
     const result = new RiskManager(config).evaluate(signal, portfolio, 3);
     expect(result.accepted).toBe(false);
     expect(result.reasons.join(" ")).toContain("MAX_TRADE_USD");
+  });
+
+  it("enforces market, trader, total exposure, and favorite-trap limits", () => {
+    const strictConfig = {
+      ...config,
+      maxTradeUsd: 5,
+      maxMarketAllocationPct: 0.2,
+      maxTraderAllocationPct: 0.25,
+      maxTotalExposurePct: 0.45,
+      minRewardRiskRatio: 0.2
+    };
+    const saturatedPortfolio: PortfolioSnapshot = {
+      ...portfolio,
+      equityUsd: 10,
+      balanceUsd: 10,
+      openPositions: [
+        {
+          id: "pos-a",
+          assetId: "asset-a",
+          conditionId: signal.conditionId,
+          traderWallet: signal.traderWallet,
+          traderCopied: signal.traderWallet,
+          shares: 2,
+          avgEntryPrice: 1,
+          costBasisUsd: 2,
+          currentPrice: 1,
+          currentValueUsd: 2,
+          unrealizedPnlUsd: 0,
+          openedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        },
+        {
+          id: "pos-b",
+          assetId: "asset-b",
+          conditionId: "other",
+          traderWallet: "0x2222222222222222222222222222222222222222",
+          traderCopied: "0x2222222222222222222222222222222222222222",
+          shares: 2,
+          avgEntryPrice: 1,
+          costBasisUsd: 2,
+          currentPrice: 1,
+          currentValueUsd: 2,
+          unrealizedPnlUsd: 0,
+          openedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    };
+
+    const result = new RiskManager(strictConfig).evaluate(
+      { ...signal, traderPrice: 0.9 },
+      saturatedPortfolio,
+      1,
+      { entryPrice: 0.9 }
+    );
+
+    const reasons = result.reasons.join(" ");
+    expect(result.accepted).toBe(false);
+    expect(reasons).toContain("Market already saturated");
+    expect(reasons).toContain("Trader exposure limit");
+    expect(reasons).toContain("Total exposure limit");
+    expect(reasons).toContain("Favorite trap filter");
   });
 
   it("enforces daily loss and kill switch", () => {
@@ -145,3 +214,13 @@ describe("RiskManager", () => {
     expect(reasons).toContain("abnormal");
   });
 });
+
+function emptyExposure(): PortfolioSnapshot["exposure"] {
+  return {
+    totalExposureUsd: 0,
+    totalExposurePct: 0,
+    byMarket: [],
+    byTrader: [],
+    byCategory: []
+  };
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scoreTrader } from "../src/traders/traderScorer";
+import { decayTraderScore, scoreTrader } from "../src/traders/traderScorer";
 
 describe("scoreTrader", () => {
   it("scores a diversified profitable trader higher than a weak trader", () => {
@@ -83,5 +83,38 @@ describe("scoreTrader", () => {
     });
 
     expect(concentrated.breakdown.penalties).toBeGreaterThanOrEqual(10);
+  });
+
+  it("decays stale trader scores after inactivity", () => {
+    const trader = scoreTrader({
+      leaderboardTrader: {
+        rank: "4",
+        proxyWallet: "0x4444444444444444444444444444444444444444",
+        vol: 10000,
+        pnl: 500
+      },
+      trades: [
+        {
+          proxyWallet: "0x4444444444444444444444444444444444444444",
+          side: "BUY" as const,
+          asset: "asset",
+          conditionId: "market",
+          size: 100,
+          price: 0.5,
+          timestamp: 1_000
+        }
+      ],
+      positions: [],
+      closedPositions: []
+    });
+
+    const decayed = decayTraderScore(
+      trader,
+      { traderScoreDecayAfterMinutes: 30, traderScoreDecayPerHour: 5 },
+      1_000_000_000
+    );
+
+    expect(decayed.score).toBeLessThan(trader.score);
+    expect(decayed.staleScorePenalty).toBeGreaterThan(0);
   });
 });

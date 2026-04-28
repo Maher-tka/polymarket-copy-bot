@@ -31,6 +31,13 @@ const portfolio: PortfolioSnapshot = {
   winRate: 0,
   maxDrawdownUsd: 0,
   maxDrawdownPct: 0,
+  exposure: {
+    totalExposureUsd: 0,
+    totalExposurePct: 0,
+    byMarket: [],
+    byTrader: [],
+    byCategory: []
+  },
   openPositions: [],
   closedPositions: [],
   latestSignals: [],

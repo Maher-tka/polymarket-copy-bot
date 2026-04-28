@@ -232,10 +232,10 @@ export function App() {
   }, [state]);
 
   const exposureUsd = useMemo(
-    () => state?.portfolio.openPositions.reduce((total, position) => total + position.costBasisUsd, 0) ?? 0,
+    () => state?.portfolio.exposure.totalExposureUsd ?? state?.portfolio.openPositions.reduce((total, position) => total + position.costBasisUsd, 0) ?? 0,
     [state]
   );
-  const exposureLimit = (state?.safeConfig.maxMarketExposureUsd ?? 1) * Math.max(1, state?.safeConfig.maxOpenPositions ?? 1);
+  const exposureLimit = Math.max(1, (state?.portfolio.equityUsd ?? 1) * (state?.safeConfig.maxTotalExposurePct ?? 1));
   const exposureUsage = clamp((exposureUsd / exposureLimit) * 100);
   const dailyLossUsed = state
     ? clamp((Math.max(0, -state.portfolio.dailyRealizedPnlUsd) / Math.max(1, state.safeConfig.maxDailyLossUsd)) * 100)
@@ -412,6 +412,7 @@ export function App() {
                 </div>
                 <div id="risk" className="scroll-mt-24 space-y-4">
                   <RiskPanel state={state} exposureUsd={exposureUsd} exposureUsage={exposureUsage} dailyLossUsed={dailyLossUsed} />
+                  <ExposureDashboardPanel state={state} />
                   <HealthPanel state={state} sseConnected={sseConnected} />
                 </div>
               </div>
@@ -1738,7 +1739,7 @@ function WatchedTradersTable({ traders }: { traders: TraderScore[] }) {
             <table className="w-full min-w-[620px] border-separate border-spacing-0">
               <thead className="table-head">
                 <tr>
-                  {["Wallet", "Name", "Score", "PnL", "Win Rate", "Recent activity", "Status"].map((head) => (
+                  {["Wallet", "Name", "Score", "PnL", "Win Rate", "Recent activity", "Refresh", "Status"].map((head) => (
                     <th key={head} className="px-3 py-2">{head}</th>
                   ))}
                 </tr>
@@ -1751,7 +1752,10 @@ function WatchedTradersTable({ traders }: { traders: TraderScore[] }) {
                     <td className="table-cell font-semibold text-primary">{trader.score.toFixed(1)}</td>
                     <td className={cn("table-cell font-semibold", trader.realizedPnlUsd >= 0 ? "text-emerald-300" : "text-red-300")}>{money(trader.realizedPnlUsd)}</td>
                     <td className="table-cell">{percent(trader.winRate)}</td>
-                    <td className="table-cell text-muted-foreground">{trader.marketsTraded} markets</td>
+                    <td className="table-cell text-muted-foreground">{trader.lastActiveAt ? timeAgo(trader.lastActiveAt) : `${trader.marketsTraded} markets`}</td>
+                    <td className="table-cell text-muted-foreground">
+                      {trader.staleScorePenalty ? `-${trader.staleScorePenalty.toFixed(1)} decay` : timeAgo(trader.lastRefreshedAt)}
+                    </td>
                     <td className="table-cell"><Badge variant={trader.score >= 75 ? "success" : "warning"}>{trader.score >= 75 ? "Watching" : "Low score"}</Badge></td>
                   </tr>
                 ))}
@@ -1787,6 +1791,10 @@ function RiskPanel({
         <RiskLine label="Max trade size" value={money(state.safeConfig.maxTradeUsd)} />
         <RiskLine label="Max position size" value={percent(state.safeConfig.maxPositionSizePct)} />
         <RiskLine label="Max deployed capital" value={percent(state.safeConfig.maxDeployedCapitalPct)} />
+        <RiskLine label="Max market allocation" value={percent(state.safeConfig.maxMarketAllocationPct)} />
+        <RiskLine label="Max trader allocation" value={percent(state.safeConfig.maxTraderAllocationPct)} />
+        <RiskLine label="Max total exposure" value={percent(state.safeConfig.maxTotalExposurePct)} />
+        <RiskLine label="Min reward/risk" value={`${state.safeConfig.minRewardRiskRatio.toFixed(2)}x`} />
         <RiskLine label="Min net arb edge" value={`${(state.safeConfig.minNetArbEdge * 100).toFixed(2)}%`} />
         <RiskLine label="Max stale data age" value={`${state.safeConfig.maxStaleDataMs}ms`} />
         <RiskLine label="Final entry buffer" value={`${state.safeConfig.finalEntryBufferSeconds}s`} />
@@ -1809,10 +1817,77 @@ function RiskPanel({
           <Progress value={exposureUsage} />
         </div>
         <RiskLine label="Open positions count" value={`${state.portfolio.openPositions.length}/${state.safeConfig.maxOpenPositions}`} />
+        <RiskLine label="Trader refresh" value={`${state.safeConfig.traderRefreshIntervalSeconds}s / decay after ${state.safeConfig.traderScoreDecayAfterMinutes}m`} />
         <RiskLine label="Errors count" value={`${state.risk.errorCount}/${state.risk.stopAfterErrors}`} />
         <RiskLine label="Kill switch status" value={state.risk.killSwitchActive ? "Active" : "Inactive"} danger={state.risk.killSwitchActive} />
       </CardContent>
     </Card>
+  );
+}
+
+function ExposureDashboardPanel({ state }: { state: DashboardState }) {
+  const exposure = state.portfolio.exposure;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Exposure Dashboard</CardTitle>
+        <Badge variant={exposure.totalExposurePct > state.safeConfig.maxTotalExposurePct ? "destructive" : "outline"}>
+          {money(exposure.totalExposureUsd)}
+        </Badge>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-2 sm:grid-cols-3">
+          <MiniDatum label="Total" value={`${money(exposure.totalExposureUsd)} / ${percent(exposure.totalExposurePct)}`} />
+          <MiniDatum label="Market cap" value={percent(state.safeConfig.maxMarketAllocationPct)} />
+          <MiniDatum label="Trader cap" value={percent(state.safeConfig.maxTraderAllocationPct)} />
+        </div>
+        <ExposureBucketList title="By Market" buckets={exposure.byMarket} limitPct={state.safeConfig.maxMarketAllocationPct} />
+        <ExposureBucketList title="By Trader" buckets={exposure.byTrader} limitPct={state.safeConfig.maxTraderAllocationPct} />
+        <ExposureBucketList title="By Category" buckets={exposure.byCategory} limitPct={state.safeConfig.maxTotalExposurePct} />
+      </CardContent>
+    </Card>
+  );
+}
+
+function ExposureBucketList({
+  title,
+  buckets,
+  limitPct
+}: {
+  title: string;
+  buckets: DashboardState["portfolio"]["exposure"]["byMarket"];
+  limitPct: number;
+}) {
+  const visible = buckets.slice(0, 4);
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between text-xs font-medium uppercase tracking-normal text-muted-foreground">
+        <span>{title}</span>
+        <span>{visible.length}/{buckets.length}</span>
+      </div>
+      {visible.length === 0 ? (
+        <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">No open exposure</div>
+      ) : (
+        <div className="space-y-2">
+          {visible.map((bucket) => {
+            const usage = clamp((bucket.percentOfPortfolio / Math.max(0.0001, limitPct)) * 100);
+            return (
+              <div key={`${title}-${bucket.key}`} className="rounded-md border border-border bg-background/55 p-2">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="min-w-0 truncate font-medium">{bucket.label}</span>
+                  <span className="shrink-0 font-semibold">{money(bucket.exposureUsd)}</span>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                  <span>{bucket.positions} positions</span>
+                  <span>{percent(bucket.percentOfPortfolio)}</span>
+                </div>
+                <Progress value={usage} className={usage > 85 ? "[&>div]:bg-red-500" : ""} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

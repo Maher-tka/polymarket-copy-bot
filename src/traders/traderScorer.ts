@@ -24,6 +24,7 @@ export function scoreTrader(input: TraderScoringInput): TraderScore {
   const winRate = closedPositions.length > 0 ? wins / closedPositions.length : realizedPnlUsd > 0 ? 0.5 : 0;
   const marketsTraded = new Set(trades.map((trade) => trade.conditionId).filter(Boolean)).size;
   const maxDrawdownUsd = calculateMaxDrawdown(closedPositions);
+  const lastActiveAt = newestActivityTimestamp(trades, closedPositions);
 
   const realizedPnlPoints = clamp((realizedPnlUsd / Math.max(1, volumeUsd * 0.1)) * 30, 0, 30);
   const winRatePoints = clamp(winRate * 20, 0, 20);
@@ -67,6 +68,10 @@ export function scoreTrader(input: TraderScoringInput): TraderScore {
     wallet,
     userName: leaderboardTrader.userName,
     score: round(clamp(rawScore, 0, 100)),
+    rawScore: round(clamp(rawScore, 0, 100)),
+    lastActiveAt: lastActiveAt ? new Date(lastActiveAt * 1000).toISOString() : undefined,
+    lastRefreshedAt: new Date().toISOString(),
+    staleScorePenalty: 0,
     rank: leaderboardTrader.rank,
     volumeUsd: round(volumeUsd),
     realizedPnlUsd: round(realizedPnlUsd),
@@ -83,6 +88,46 @@ export function scoreTrader(input: TraderScoringInput): TraderScore {
       penalties: round(penalties)
     },
     notes
+  };
+}
+
+export function decayTraderScore(
+  trader: TraderScore,
+  config: { traderScoreDecayAfterMinutes: number; traderScoreDecayPerHour: number },
+  nowMs = Date.now()
+): TraderScore {
+  const lastActiveMs = trader.lastActiveAt ? new Date(trader.lastActiveAt).getTime() : 0;
+  if (!Number.isFinite(lastActiveMs) || lastActiveMs <= 0) {
+    const penalty = Math.min(30, config.traderScoreDecayPerHour);
+    return {
+      ...trader,
+      rawScore: trader.rawScore ?? trader.score,
+      score: round(clamp(trader.score - penalty, 0, 100)),
+      staleScorePenalty: round(penalty),
+      lastRefreshedAt: new Date(nowMs).toISOString(),
+      notes: [...trader.notes, "Trader has no recent activity timestamp; applied stale score decay."]
+    };
+  }
+
+  const inactiveMinutes = Math.max(0, (nowMs - lastActiveMs) / 60000);
+  if (inactiveMinutes <= config.traderScoreDecayAfterMinutes) {
+    return {
+      ...trader,
+      rawScore: trader.rawScore ?? trader.score,
+      staleScorePenalty: 0,
+      lastRefreshedAt: new Date(nowMs).toISOString()
+    };
+  }
+
+  const staleHours = (inactiveMinutes - config.traderScoreDecayAfterMinutes) / 60;
+  const penalty = Math.min(30, staleHours * config.traderScoreDecayPerHour);
+  return {
+    ...trader,
+    rawScore: trader.rawScore ?? trader.score,
+    score: round(clamp((trader.rawScore ?? trader.score) - penalty, 0, 100)),
+    staleScorePenalty: round(penalty),
+    lastRefreshedAt: new Date(nowMs).toISOString(),
+    notes: penalty > 0 ? [...trader.notes, `Inactive trader score decay: -${round(penalty)}.`] : trader.notes
   };
 }
 
@@ -104,6 +149,14 @@ function calculateRecentPerformancePoints(closedPositions: DataApiClosedPosition
   const recentPnl = sumClosedPnl(recent);
   if (recentPnl > 0) return clamp(7.5 + Math.log10(recentPnl + 1) * 3, 0, 15);
   return clamp(7.5 + recentPnl, 0, 15);
+}
+
+function newestActivityTimestamp(trades: DataApiTrade[], closedPositions: DataApiClosedPosition[]): number | undefined {
+  const timestamps = [
+    ...trades.map((trade) => normalizeTimestamp(trade.timestamp)),
+    ...closedPositions.map((position) => normalizeTimestamp(position.timestamp))
+  ].filter((timestamp) => Number.isFinite(timestamp) && timestamp > 0);
+  return timestamps.length > 0 ? Math.max(...timestamps) : undefined;
 }
 
 function calculateMaxDrawdown(closedPositions: DataApiClosedPosition[]): number {

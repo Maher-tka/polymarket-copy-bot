@@ -14,7 +14,7 @@ export class WalletWatcher extends EventEmitter {
 
   constructor(
     private readonly dataClient: DataClient,
-    private readonly watchedTraders: TraderScore[],
+    private watchedTraders: TraderScore[],
     private readonly config: Pick<BotConfig, "traderPollIntervalSeconds" | "replayRecentTradesOnStart">,
     private readonly status?: BotStatus
   ) {
@@ -41,6 +41,15 @@ export class WalletWatcher extends EventEmitter {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.status?.setWalletWatcherActive(false);
+  }
+
+  replaceWatchedTraders(traders: TraderScore[]): void {
+    this.watchedTraders = traders;
+    this.status?.setWatchedWalletCount(traders.length);
+    logger.info("Wallet watcher refreshed watched trader list.", {
+      wallets: traders.map((trader) => trader.wallet),
+      count: traders.length
+    });
   }
 
   async pollOnce(onSignal: SignalHandler): Promise<void> {

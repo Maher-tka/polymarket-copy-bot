@@ -1,5 +1,6 @@
 import { BotConfig, BotMode, CopySignal, PortfolioSnapshot, RiskDecision } from "../types";
 import { logger } from "../logger";
+import { calculateProspectiveExposure } from "./exposure";
 
 export interface LiveOrderIntent {
   strategy: string;
@@ -18,6 +19,11 @@ export interface LiveRiskContext {
   abnormalFillBehavior: boolean;
 }
 
+export interface CopyTradeRiskContext {
+  entryPrice?: number;
+  expectedRewardUsd?: number;
+}
+
 export class RiskManager {
   private killSwitchActive = false;
   private paused = false;
@@ -34,15 +40,26 @@ export class RiskManager {
       | "maxTradeUsd"
       | "maxTradeSizeUsdc"
       | "maxMarketExposureUsd"
+      | "maxMarketAllocationPct"
+      | "maxTraderAllocationPct"
+      | "maxTotalExposurePct"
+      | "maxPositionSizePct"
+      | "maxOneMarketExposureUsd"
       | "maxDailyLossUsd"
       | "maxDailyLossUsdc"
       | "maxOpenPositions"
       | "stopAfterErrors"
       | "minDepthMultiplier"
+      | "minRewardRiskRatio"
     >
   ) {}
 
-  evaluate(signal: CopySignal, portfolio: PortfolioSnapshot, intendedTradeUsd: number): RiskDecision {
+  evaluate(
+    signal: CopySignal,
+    portfolio: PortfolioSnapshot,
+    intendedTradeUsd: number,
+    context: CopyTradeRiskContext = {}
+  ): RiskDecision {
     const reasons: string[] = [];
 
     if (this.killSwitchActive) {
@@ -65,6 +82,11 @@ export class RiskManager {
       reasons.push("Trade size exceeds MAX_TRADE_USD.");
     }
 
+    const portfolioValueUsd = Math.max(1, portfolio.equityUsd || portfolio.startingBalanceUsd);
+    if (signal.side === "BUY" && intendedTradeUsd > portfolioValueUsd * this.config.maxPositionSizePct) {
+      reasons.push("Trade risk exceeds MAX_POSITION_SIZE_PCT of portfolio.");
+    }
+
     if (intendedTradeUsd > portfolio.balanceUsd && signal.side === "BUY") {
       reasons.push("Not enough paper cash for this simulated buy.");
     }
@@ -80,6 +102,40 @@ export class RiskManager {
 
     if (signal.side === "BUY" && marketExposure + intendedTradeUsd > this.config.maxMarketExposureUsd) {
       reasons.push("MAX_MARKET_EXPOSURE_USD would be exceeded.");
+    }
+
+    if (signal.side === "BUY" && marketExposure + intendedTradeUsd > this.config.maxOneMarketExposureUsd) {
+      reasons.push("MAX_ONE_MARKET_EXPOSURE_USD would be exceeded.");
+    }
+
+    if (signal.side === "BUY") {
+      const prospective = calculateProspectiveExposure({
+        positions: portfolio.openPositions,
+        conditionId: signal.conditionId,
+        marketTitle: signal.marketTitle,
+        marketSlug: signal.marketSlug,
+        traderWallet: signal.traderWallet,
+        traderName: signal.traderName,
+        tradeUsd: intendedTradeUsd
+      });
+      const maxMarketUsd = portfolioValueUsd * this.config.maxMarketAllocationPct;
+      const maxTraderUsd = portfolioValueUsd * this.config.maxTraderAllocationPct;
+      const maxTotalUsd = portfolioValueUsd * this.config.maxTotalExposurePct;
+
+      if (prospective.marketExposureUsd > maxMarketUsd) {
+        reasons.push("Market already saturated: MAX_MARKET_ALLOCATION_PCT would be exceeded.");
+      }
+      if (prospective.traderExposureUsd > maxTraderUsd) {
+        reasons.push("Trader exposure limit hit: MAX_TRADER_ALLOCATION_PCT would be exceeded.");
+      }
+      if (prospective.totalExposureUsd > maxTotalUsd) {
+        reasons.push("Total exposure limit hit: MAX_TOTAL_EXPOSURE_PCT would be exceeded.");
+      }
+
+      const rewardRisk = calculateRewardRiskRatio(signal, intendedTradeUsd, context);
+      if (rewardRisk !== undefined && rewardRisk < this.config.minRewardRiskRatio) {
+        reasons.push("Favorite trap filter: expected reward is too small versus downside risk.");
+      }
     }
 
     return {
@@ -154,4 +210,21 @@ export class RiskManager {
       stopAfterErrors: this.config.stopAfterErrors
     };
   }
+}
+
+function calculateRewardRiskRatio(
+  signal: CopySignal,
+  intendedTradeUsd: number,
+  context: CopyTradeRiskContext
+): number | undefined {
+  if (intendedTradeUsd <= 0 || signal.side !== "BUY") return undefined;
+  if (context.expectedRewardUsd !== undefined && Number.isFinite(context.expectedRewardUsd)) {
+    return Math.max(0, context.expectedRewardUsd) / intendedTradeUsd;
+  }
+
+  const entryPrice = context.entryPrice ?? signal.traderPrice;
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0 || entryPrice >= 1) return undefined;
+  const shares = intendedTradeUsd / entryPrice;
+  const maxRewardUsd = shares * Math.max(0, 1 - entryPrice);
+  return maxRewardUsd / intendedTradeUsd;
 }

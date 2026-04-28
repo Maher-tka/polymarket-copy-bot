@@ -7,6 +7,7 @@ import {
   TraderScore,
   TradingMode
 } from "../types";
+import { buildExposureSummary, classifyMarketCategory } from "../risk/exposure";
 
 const MAX_SIGNALS = 100;
 const MAX_SKIPPED = 200;
@@ -79,8 +80,10 @@ export class Portfolio {
       side: signal.side,
       marketTitle: signal.marketTitle,
       marketSlug: signal.marketSlug,
+      marketCategory: signal.marketCategory ?? classifyMarketCategory(signal.marketTitle, signal.marketSlug),
       outcome: signal.outcome,
       traderCopied: signal.traderName ?? signal.traderWallet,
+      traderWallet: signal.traderWallet,
       sourceSignalId: signal.id,
       status: signal.simulated ? "DEMO PAPER" : "OPEN",
       shares: round(shares),
@@ -129,8 +132,10 @@ export class Portfolio {
       conditionId: signal.conditionId,
       side: existing.side ?? "BUY",
       marketTitle: signal.marketTitle,
+      marketCategory: existing.marketCategory,
       outcome: signal.outcome,
       traderCopied: existing.traderCopied,
+      traderWallet: existing.traderWallet,
       shares: round(sharesToClose),
       entryPrice: round(costBasis / sharesToClose),
       exitPrice: round(exitPrice),
@@ -177,6 +182,7 @@ export class Portfolio {
       winRate: this.closedPositions.length > 0 ? round(wins / this.closedPositions.length) : 0,
       maxDrawdownUsd: round(this.maxDrawdownUsd),
       maxDrawdownPct: this.peakEquityUsd > 0 ? round(this.maxDrawdownUsd / this.peakEquityUsd) : 0,
+      exposure: buildExposureSummary(openPositions, equityUsd || this.startingBalanceUsd),
       openPositions,
       closedPositions: [...this.closedPositions],
       latestSignals: [...this.latestSignals],

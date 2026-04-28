@@ -1,7 +1,7 @@
 import { BotConfig, LeaderboardTrader, TraderScore } from "../types";
 import { DataClient } from "../polymarket/dataClient";
 import { logger } from "../logger";
-import { scoreTrader } from "./traderScorer";
+import { decayTraderScore, scoreTrader } from "./traderScorer";
 
 const WALLET_PATTERN = /^0x[a-fA-F0-9]{40}$/;
 
@@ -10,7 +10,12 @@ export class LeaderboardService {
     private readonly dataClient: DataClient,
     private readonly config: Pick<
       BotConfig,
-      "watchedWallets" | "leaderboardLimit" | "maxWatchedTraders" | "minTraderScore"
+      | "watchedWallets"
+      | "leaderboardLimit"
+      | "maxWatchedTraders"
+      | "minTraderScore"
+      | "traderScoreDecayAfterMinutes"
+      | "traderScoreDecayPerHour"
     >
   ) {}
 
@@ -41,7 +46,7 @@ export class LeaderboardService {
           this.dataClient.getClosedPositions(trader.proxyWallet, 100)
         ]);
 
-        scored.push(scoreTrader({ leaderboardTrader: trader, trades, positions, closedPositions }));
+        scored.push(decayTraderScore(scoreTrader({ leaderboardTrader: trader, trades, positions, closedPositions }), this.config));
       } catch (error) {
         logger.warn("Could not score trader from public APIs.", {
           wallet: trader.proxyWallet,

@@ -11,6 +11,7 @@ export interface CopySignal {
   conditionId: string;
   marketSlug?: string;
   marketTitle?: string;
+  marketCategory?: string;
   outcome?: string;
   traderSize: number;
   traderPrice: number;
@@ -26,8 +27,11 @@ export interface PaperPosition {
   conditionId: string;
   side?: TradeSide;
   marketTitle?: string;
+  marketSlug?: string;
+  marketCategory?: string;
   outcome?: string;
   traderCopied?: string;
+  traderWallet?: string;
   sourceSignalId?: string;
   status?: string;
   shares: number;
@@ -46,8 +50,10 @@ export interface ClosedPosition {
   conditionId: string;
   side?: TradeSide;
   marketTitle?: string;
+  marketCategory?: string;
   outcome?: string;
   traderCopied?: string;
+  traderWallet?: string;
   shares: number;
   entryPrice: number;
   exitPrice: number;
@@ -71,6 +77,10 @@ export interface TraderScore {
   wallet: string;
   userName?: string;
   score: number;
+  rawScore?: number;
+  lastActiveAt?: string;
+  lastRefreshedAt?: string;
+  staleScorePenalty?: number;
   volumeUsd: number;
   realizedPnlUsd: number;
   winRate: number;
@@ -97,10 +107,27 @@ export interface PortfolioSnapshot {
   winRate: number;
   maxDrawdownUsd: number;
   maxDrawdownPct: number;
+  exposure: ExposureSummary;
   openPositions: PaperPosition[];
   closedPositions: ClosedPosition[];
   latestSignals: CopySignal[];
   skippedTrades: SkippedTrade[];
+}
+
+export interface ExposureBucket {
+  key: string;
+  label: string;
+  exposureUsd: number;
+  percentOfPortfolio: number;
+  positions: number;
+}
+
+export interface ExposureSummary {
+  totalExposureUsd: number;
+  totalExposurePct: number;
+  byMarket: ExposureBucket[];
+  byTrader: ExposureBucket[];
+  byCategory: ExposureBucket[];
 }
 
 export interface BotRuntimeStatus {
@@ -451,10 +478,16 @@ export interface DashboardState {
     maxTradeSizeUsd: number;
     maxTradeSizeUsdc: number;
     maxMarketExposureUsd: number;
+    maxMarketAllocationPct: number;
+    maxTraderAllocationPct: number;
+    maxTotalExposurePct: number;
     maxDailyLossUsd: number;
     maxDailyLossUsdc: number;
     maxOpenPositions: number;
     traderPollIntervalSeconds: number;
+    traderRefreshIntervalSeconds: number;
+    traderScoreDecayAfterMinutes: number;
+    traderScoreDecayPerHour: number;
     positionMarkIntervalSeconds: number;
     arbitrageScanIntervalSeconds: number;
     marketMakingIntervalSeconds: number;
@@ -510,6 +543,7 @@ export interface DashboardState {
     maxActiveMarkets: number;
     lossCooldownSeconds: number;
     minCopyTradeUsd: number;
+    minRewardRiskRatio: number;
     misleadingWinRateMinWinRate: number;
     misleadingWinRateMaxProfitPerTrade: number;
   };

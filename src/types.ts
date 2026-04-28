@@ -40,6 +40,9 @@ export interface BotConfig {
   maxTradeSizeUsd: number;
   maxTradeSizeUsdc: number;
   maxMarketExposureUsd: number;
+  maxMarketAllocationPct: number;
+  maxTraderAllocationPct: number;
+  maxTotalExposurePct: number;
   maxDailyLossUsd: number;
   maxDailyLossUsdc: number;
   maxOpenPositions: number;
@@ -65,6 +68,9 @@ export interface BotConfig {
   maxWatchedTraders: number;
   leaderboardLimit: number;
   traderPollIntervalSeconds: number;
+  traderRefreshIntervalSeconds: number;
+  traderScoreDecayAfterMinutes: number;
+  traderScoreDecayPerHour: number;
   positionMarkIntervalSeconds: number;
   enableMarketWebSocket: boolean;
   replayRecentTradesOnStart: boolean;
@@ -121,6 +127,7 @@ export interface BotConfig {
   maxActiveMarkets: number;
   lossCooldownSeconds: number;
   minCopyTradeUsd: number;
+  minRewardRiskRatio: number;
   misleadingWinRateMinWinRate: number;
   misleadingWinRateMaxProfitPerTrade: number;
   recorderEnabled: boolean;
@@ -270,6 +277,10 @@ export interface TraderScore {
   wallet: string;
   userName?: string;
   score: number;
+  rawScore?: number;
+  lastActiveAt?: string;
+  lastRefreshedAt?: string;
+  staleScorePenalty?: number;
   rank?: string;
   volumeUsd: number;
   realizedPnlUsd: number;
@@ -300,6 +311,7 @@ export interface CopySignal {
   marketTitle?: string;
   outcome?: string;
   outcomeIndex?: number;
+  marketCategory?: string;
   traderSize: number;
   traderPrice: number;
   traderNotionalUsd: number;
@@ -342,8 +354,10 @@ export interface PaperPosition {
   side?: TradeSide;
   marketTitle?: string;
   marketSlug?: string;
+  marketCategory?: string;
   outcome?: string;
   traderCopied?: string;
+  traderWallet?: string;
   sourceSignalId?: string;
   status?: string;
   shares: number;
@@ -362,8 +376,10 @@ export interface ClosedPosition {
   conditionId: string;
   side?: TradeSide;
   marketTitle?: string;
+  marketCategory?: string;
   outcome?: string;
   traderCopied?: string;
+  traderWallet?: string;
   shares: number;
   entryPrice: number;
   exitPrice: number;
@@ -391,6 +407,22 @@ export interface LatencyMetrics {
   totalLatencyMs: number;
 }
 
+export interface ExposureBucket {
+  key: string;
+  label: string;
+  exposureUsd: number;
+  percentOfPortfolio: number;
+  positions: number;
+}
+
+export interface ExposureSummary {
+  totalExposureUsd: number;
+  totalExposurePct: number;
+  byMarket: ExposureBucket[];
+  byTrader: ExposureBucket[];
+  byCategory: ExposureBucket[];
+}
+
 export interface PortfolioSnapshot {
   mode: TradingMode;
   balanceUsd: number;
@@ -402,6 +434,7 @@ export interface PortfolioSnapshot {
   winRate: number;
   maxDrawdownUsd: number;
   maxDrawdownPct: number;
+  exposure: ExposureSummary;
   openPositions: PaperPosition[];
   closedPositions: ClosedPosition[];
   latestSignals: CopySignal[];

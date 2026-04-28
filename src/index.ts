@@ -22,6 +22,7 @@ import { MultiStrategyEngine } from "./strategy/multiStrategyEngine";
 import { evaluateLatency } from "./latency/latencyEngine";
 import { scoreSignal, shouldSkipSmartCopy } from "./strategy/signalScoring";
 import { SignalThrottle } from "./risk/signalThrottle";
+import { classifyMarketCategory } from "./risk/exposure";
 
 async function main(): Promise<void> {
   if (config.mode !== "paper") {
@@ -114,6 +115,16 @@ async function main(): Promise<void> {
       marketWebSocket
     })
   );
+  let traderRefreshInFlight = false;
+  setInterval(() => {
+    if (traderRefreshInFlight) return;
+    traderRefreshInFlight = true;
+    refreshWatchedTraders({ leaderboard, watcher, portfolio })
+      .catch((error) => riskManager.recordError(error))
+      .finally(() => {
+        traderRefreshInFlight = false;
+      });
+  }, config.traderRefreshIntervalSeconds * 1000);
 
   if (config.simulateSignals) {
     const demoSignalGenerator = new DemoSignalGenerator(
@@ -187,6 +198,7 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
 
   try {
     const market = signal.marketSlug ? await gammaClient.getMarketBySlug(signal.marketSlug) : undefined;
+    signal.marketCategory = classifyMarketCategory(signal.marketTitle ?? market?.question, signal.marketSlug ?? market?.slug);
     const decisionStartedAtMs = Date.now();
     const snapshot = await clobPublicClient.buildMarketSnapshot(
       signal.assetId,
@@ -286,7 +298,9 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
       return;
     }
 
-    const riskDecision = riskManager.evaluate(signal, portfolioSnapshot, size.tradeUsd);
+    const riskDecision = riskManager.evaluate(signal, portfolioSnapshot, size.tradeUsd, {
+      entryPrice: filterDecision.currentEntryPrice ?? signal.traderPrice
+    });
     if (!riskDecision.accepted) {
       portfolio.addSkipped(riskDecision.reasons, signal);
       logger.warn("Trade skipped by risk manager.", { reasons: riskDecision.reasons, signalId: signal.id });
@@ -321,6 +335,27 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
     riskManager.recordError(error);
     await telegram.send("bot_error", error instanceof Error ? error.message : String(error));
   }
+}
+
+async function refreshWatchedTraders(input: {
+  leaderboard: LeaderboardService;
+  watcher: WalletWatcher;
+  portfolio: Portfolio;
+}): Promise<void> {
+  const traders = await input.leaderboard.selectWatchedTraders();
+  input.portfolio.setWatchedTraders(traders);
+  input.watcher.replaceWatchedTraders(traders);
+  logger.info("Trader refresh completed.", {
+    count: traders.length,
+    topTrader: traders[0]
+      ? {
+          wallet: traders[0].wallet,
+          score: traders[0].score,
+          staleScorePenalty: traders[0].staleScorePenalty,
+          lastActiveAt: traders[0].lastActiveAt
+        }
+      : undefined
+  });
 }
 
 function normalizeTimestampMs(timestamp: string): number | undefined {

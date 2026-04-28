@@ -25,6 +25,9 @@ describe("PaperExecutionLayer", () => {
     expect(result.success).toBe(true);
     expect(portfolio.getSnapshot().openPositions).toHaveLength(1);
     expect(portfolio.getSnapshot().balanceUsd).toBeCloseTo(98);
+    expect(portfolio.getSnapshot().exposure.totalExposureUsd).toBeCloseTo(2);
+    expect(portfolio.getSnapshot().exposure.byMarket[0].label).toBe("Test market");
+    expect(portfolio.getSnapshot().exposure.byTrader[0].key).toBe("0xabc");
   });
 
   it("routes strategy fills through the strategy paper execution path", () => {
