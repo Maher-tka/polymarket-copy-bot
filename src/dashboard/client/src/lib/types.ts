@@ -335,6 +335,26 @@ export interface LosingDiagnosticsSummary {
   }>;
 }
 
+export interface PaperLearningAdjustment {
+  setting: string;
+  from: number | string | boolean;
+  to: number | string | boolean;
+  reason: string;
+}
+
+export interface PaperLearningState {
+  enabled: boolean;
+  autoApply: boolean;
+  focusedStrategy?: StrategyName;
+  disabledStrategies: StrategyName[];
+  lastUpdatedAt?: string;
+  sampleSignals: number;
+  sampleTrades: number;
+  recommendations: string[];
+  appliedAdjustments: PaperLearningAdjustment[];
+  notes: string[];
+}
+
 export interface StrategyEngineState {
   activeMode: "Scanner" | "Paper" | "Real";
   realTradingEnabled: boolean;
@@ -348,6 +368,7 @@ export interface StrategyEngineState {
   losingDiagnostics: LosingDiagnosticsSummary;
   makerOrders: SimulatedMakerOrder[];
   metrics: StrategyMetrics[];
+  learning?: PaperLearningState;
   recorder: {
     enabled: boolean;
     snapshotsRecorded: number;
@@ -373,12 +394,22 @@ export interface DashboardState {
   strategies?: StrategyEngineState;
   logs: LogEvent[];
   safeConfig: {
+    mode: "research" | "backtest" | "paper" | "live";
     paperTradingOnly: boolean;
+    enableLiveTrading: boolean;
     maxTradeUsd: number;
     maxTradeSizeUsd: number;
+    maxTradeSizeUsdc: number;
     maxMarketExposureUsd: number;
     maxDailyLossUsd: number;
+    maxDailyLossUsdc: number;
     maxOpenPositions: number;
+    traderPollIntervalSeconds: number;
+    positionMarkIntervalSeconds: number;
+    arbitrageScanIntervalSeconds: number;
+    marketMakingIntervalSeconds: number;
+    whalePollIntervalSeconds: number;
+    enableMarketWebSocket: boolean;
     minTraderScore: number;
     maxSpread: number;
     simulateSignals: boolean;
@@ -394,6 +425,9 @@ export interface DashboardState {
     maxSlippage: number;
     maxStaleDataMs: number;
     maxDataAgeMs: number;
+    orderStaleSeconds: number;
+    defaultLatencyMs: number;
+    killSwitchDrawdownPercent: number;
     finalEntryBufferSeconds: number;
     forcedRiskCheckSeconds: number;
     minNetArbEdge: number;
@@ -408,7 +442,13 @@ export interface DashboardState {
     makerFeeRate: number;
     marketMakingMinEdge: number;
     marketMakingMaxDataAgeMs: number;
+    marketMakingMaxQueueDepthMultiplier: number;
+    marketMakingAdverseSelectionBps: number;
     strategyLabAllMarkets: boolean;
+    paperLearningEnabled: boolean;
+    paperLearningAutoApply: boolean;
+    paperLearningMinSignals: number;
+    paperLearningMinTrades: number;
   };
 }
 

@@ -2,6 +2,7 @@ import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
+import { PaperExecutionLayer } from "../src/execution/executionLayer";
 import { RiskManager } from "../src/risk/riskManager";
 import { StrategyRiskManager } from "../src/risk/strategyRiskManager";
 import { NetArbitrageScanner } from "../src/strategy/netArbitrageScanner";
@@ -83,7 +84,7 @@ describe("NetArbitrageScanner", () => {
         no: book("no", [{ price: "0.50", size: "20" }])
       }),
       store,
-      new StrategyPaperTrader(store),
+      new PaperExecutionLayer({ strategyTrader: new StrategyPaperTrader(store) }),
       new StrategyRiskManager(config, new RiskManager(config)),
       config
     );
@@ -185,7 +186,7 @@ function makeScanner(
   return new NetArbitrageScanner(
     clob,
     store,
-    new StrategyPaperTrader(store),
+    new PaperExecutionLayer({ strategyTrader: new StrategyPaperTrader(store) }),
     new StrategyRiskManager(merged, new RiskManager(merged)),
     merged
   );

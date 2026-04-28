@@ -3,9 +3,9 @@ import { LocalDatabase } from "../storage/localDatabase";
 import { StrategyDiagnosticRecord, StrategyPaperTrade, StrategyRejection } from "../types";
 
 const db = new LocalDatabase();
-const diagnostics = db.readRecords<StrategyDiagnosticRecord>("diagnostic");
-const trades = db.readRecords<StrategyPaperTrade>("paperTrade");
-const rejections = db.readRecords<StrategyRejection>("rejection");
+const diagnostics = db.readLatestRecords<StrategyDiagnosticRecord>("diagnostic");
+const trades = db.readLatestRecords<StrategyPaperTrade>("paperTrade");
+const rejections = db.readLatestRecords<StrategyRejection>("rejection");
 const summary = buildLosingDiagnostics({ diagnostics, trades, rejections });
 
 const rejectedByReason = summary.rejectionReasons.map((item) => `  - ${item.reason}: ${item.count}`).join("\n") || "  - none";

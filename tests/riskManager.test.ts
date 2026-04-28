@@ -1,14 +1,50 @@
 import { describe, expect, it } from "vitest";
-import { RiskManager } from "../src/risk/riskManager";
+import { LiveOrderIntent, LiveRiskContext, RiskManager } from "../src/risk/riskManager";
 import { BotConfig, CopySignal, PortfolioSnapshot } from "../src/types";
 
 const config = {
+  mode: "paper",
+  enableLiveTrading: false,
+  realTradingEnabled: false,
+  liveTrading: false,
+  paperTrading: true,
   maxTradeUsd: 2,
+  maxTradeSizeUsdc: 2,
   maxMarketExposureUsd: 5,
   maxDailyLossUsd: 8,
+  maxDailyLossUsdc: 8,
   maxOpenPositions: 1,
-  stopAfterErrors: 3
+  stopAfterErrors: 3,
+  minDepthMultiplier: 5
 } satisfies Partial<BotConfig> as BotConfig;
+
+const liveConfig = {
+  ...config,
+  mode: "live",
+  enableLiveTrading: true,
+  realTradingEnabled: true,
+  liveTrading: true,
+  paperTrading: false,
+  maxTradeSizeUsdc: 5,
+  maxOpenPositions: 2
+} satisfies Partial<BotConfig> as BotConfig;
+
+const liveIntent: LiveOrderIntent = {
+  strategy: "stink-bid",
+  marketId: "market-1",
+  estimatedNotionalUsd: 2,
+  marketLiquidityUsd: 25,
+  approvedForLive: true
+};
+
+const liveContext: LiveRiskContext = {
+  mode: "live",
+  openPositions: 0,
+  dailyPnlUsd: 0,
+  hourlyPnlUsd: 0,
+  apiErrorCount: 0,
+  abnormalFillBehavior: false
+};
 
 const signal: CopySignal = {
   id: "s1",
@@ -63,5 +99,49 @@ describe("RiskManager", () => {
     expect(result.accepted).toBe(false);
     expect(result.reasons.join(" ")).toContain("Kill switch");
     expect(result.reasons.join(" ")).toContain("MAX_DAILY_LOSS_USD");
+  });
+
+  it("rejects real orders in paper-safe config", () => {
+    const result = new RiskManager(config).evaluateLiveOrder(liveIntent, liveContext);
+
+    expect(result.accepted).toBe(false);
+    expect(result.reasons.join(" ")).toContain("ENABLE_LIVE_TRADING is false");
+    expect(result.reasons.join(" ")).toContain("REAL_TRADING_ENABLED is false");
+    expect(result.reasons.join(" ")).toContain("MODE must be live");
+  });
+
+  it("accepts a live order only when every live risk check passes", () => {
+    const result = new RiskManager(liveConfig).evaluateLiveOrder(liveIntent, liveContext);
+
+    expect(result.accepted).toBe(true);
+    expect(result.reasons).toEqual([]);
+  });
+
+  it("rejects unsafe live orders with specific reasons", () => {
+    const result = new RiskManager(liveConfig).evaluateLiveOrder(
+      {
+        ...liveIntent,
+        approvedForLive: false,
+        estimatedNotionalUsd: 6,
+        marketLiquidityUsd: 10
+      },
+      {
+        ...liveContext,
+        openPositions: 2,
+        dailyPnlUsd: -9,
+        apiErrorCount: 3,
+        abnormalFillBehavior: true
+      }
+    );
+
+    const reasons = result.reasons.join(" ");
+    expect(result.accepted).toBe(false);
+    expect(reasons).toContain("Strategy is not approved");
+    expect(reasons).toContain("MAX_TRADE_SIZE_USDC");
+    expect(reasons).toContain("MAX_DAILY_LOSS_USDC");
+    expect(reasons).toContain("MAX_OPEN_POSITIONS");
+    expect(reasons).toContain("Market liquidity is too low");
+    expect(reasons).toContain("STOP_AFTER_ERRORS");
+    expect(reasons).toContain("abnormal");
   });
 });

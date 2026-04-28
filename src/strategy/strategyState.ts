@@ -36,7 +36,9 @@ export class StrategyStateStore {
       recorderEnabled: boolean;
       backtestMode: boolean;
     }
-  ) {}
+  ) {
+    this.hydrateFromDatabase();
+  }
 
   addOpportunity(opportunity: StrategyOpportunity): void {
     this.opportunities.unshift(opportunity);
@@ -56,6 +58,7 @@ export class StrategyStateStore {
     if (trade) {
       Object.assign(trade, patch);
       this.updateDiagnosticForTrade(trade);
+      this.database.recordPaperTradeUpdate(trade);
     }
   }
 
@@ -137,6 +140,14 @@ export class StrategyStateStore {
     diagnostic.lossCause = trade.lossCause;
     diagnostic.reasonForLoss = trade.lossReason ?? (tradePnl(trade) < 0 ? explainLoss(trade) : undefined);
     diagnostic.simulatedExitValue = trade.exitValueUsd;
+    this.database.recordDiagnostic(diagnostic);
+  }
+
+  private hydrateFromDatabase(): void {
+    this.opportunities.push(...this.database.readRecentRecords<StrategyOpportunity>("opportunity", MAX_ITEMS));
+    this.paperTrades.push(...this.database.readRecentRecords<StrategyPaperTrade>("paperTrade", MAX_ITEMS));
+    this.rejectedSignals.push(...this.database.readRecentRecords<StrategyRejection>("rejection", MAX_ITEMS));
+    this.diagnostics.push(...this.database.readRecentRecords<StrategyDiagnosticRecord>("diagnostic", MAX_ITEMS));
   }
 }
 

@@ -8,6 +8,7 @@ import { MarketWebSocket } from "./polymarket/marketWebSocket";
 import { RiskManager } from "./risk/riskManager";
 import { StrategyRiskManager } from "./risk/strategyRiskManager";
 import { PositionSizer } from "./risk/positionSizer";
+import { CopyExecutionPort, PaperExecutionLayer } from "./execution/executionLayer";
 import { createDashboardServer } from "./dashboard/server";
 import { TelegramNotifier } from "./notifications/telegram";
 import { DemoSignalGenerator } from "./strategy/demoSignalGenerator";
@@ -20,6 +21,10 @@ import { CopySignal } from "./types";
 import { MultiStrategyEngine } from "./strategy/multiStrategyEngine";
 
 async function main(): Promise<void> {
+  if (config.mode !== "paper") {
+    throw new Error(`MODE=${config.mode} is parsed and reserved, but this runtime currently only starts PAPER mode.`);
+  }
+
   if (config.paperTradingOnly && (config.liveTrading || config.realTradingEnabled || !config.paperTrading)) {
     throw new Error("Unsafe config: PAPER_TRADING_ONLY=true requires PAPER_TRADING=true and all live trading flags false.");
   }
@@ -38,6 +43,7 @@ async function main(): Promise<void> {
   const positionSizer = new PositionSizer(config);
   const marketFilter = new MarketFilter(config);
   const paperTrader = new PaperTrader(portfolio);
+  const execution = new PaperExecutionLayer({ copyTrader: paperTrader });
   const telegram = new TelegramNotifier(config);
   const marketWebSocket = config.enableMarketWebSocket ? new MarketWebSocket() : undefined;
   botStatus.setApiConnected(true);
@@ -96,7 +102,7 @@ async function main(): Promise<void> {
       marketFilter,
       positionSizer,
       riskManager,
-      paperTrader,
+      execution,
       portfolio,
       telegram,
       marketWebSocket
@@ -119,7 +125,7 @@ async function main(): Promise<void> {
         marketFilter,
         positionSizer,
         riskManager,
-        paperTrader,
+        execution,
         portfolio,
         telegram,
         marketWebSocket
@@ -139,7 +145,7 @@ interface ProcessSignalDeps {
   marketFilter: MarketFilter;
   positionSizer: PositionSizer;
   riskManager: RiskManager;
-  paperTrader: PaperTrader;
+  execution: CopyExecutionPort;
   portfolio: Portfolio;
   telegram: TelegramNotifier;
   marketWebSocket?: MarketWebSocket;
@@ -153,7 +159,7 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
     marketFilter,
     positionSizer,
     riskManager,
-    paperTrader,
+    execution,
     portfolio,
     telegram,
     marketWebSocket
@@ -210,7 +216,7 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
       return;
     }
 
-    const result = paperTrader.execute(signal, filterDecision.currentEntryPrice ?? signal.traderPrice, size);
+    const result = execution.executeCopySignal(signal, filterDecision.currentEntryPrice ?? signal.traderPrice, size);
     marketWebSocket?.subscribe([signal.assetId]);
     await markOpenPositions(portfolio, clobPublicClient);
 

@@ -38,12 +38,22 @@ export function createDashboardServer({ config, portfolio, riskManager, logger, 
       strategies: strategyEngine?.getState(),
       logs: logger.getLogs(),
       safeConfig: {
+        mode: config.mode,
         paperTradingOnly: config.paperTradingOnly,
+        enableLiveTrading: config.enableLiveTrading,
         maxTradeUsd: config.maxTradeUsd,
         maxTradeSizeUsd: config.maxTradeSizeUsd,
+        maxTradeSizeUsdc: config.maxTradeSizeUsdc,
         maxMarketExposureUsd: config.maxMarketExposureUsd,
         maxDailyLossUsd: config.maxDailyLossUsd,
+        maxDailyLossUsdc: config.maxDailyLossUsdc,
         maxOpenPositions: config.maxOpenPositions,
+        traderPollIntervalSeconds: config.traderPollIntervalSeconds,
+        positionMarkIntervalSeconds: config.positionMarkIntervalSeconds,
+        arbitrageScanIntervalSeconds: config.arbitrageScanIntervalSeconds,
+        marketMakingIntervalSeconds: config.marketMakingIntervalSeconds,
+        whalePollIntervalSeconds: config.whalePollIntervalSeconds,
+        enableMarketWebSocket: config.enableMarketWebSocket,
         minTraderScore: config.minTraderScore,
         maxSpread: config.maxSpread,
         simulateSignals: config.simulateSignals,
@@ -59,6 +69,9 @@ export function createDashboardServer({ config, portfolio, riskManager, logger, 
         maxSlippage: config.maxSlippage,
         maxStaleDataMs: config.maxStaleDataMs,
         maxDataAgeMs: config.maxDataAgeMs,
+        orderStaleSeconds: config.orderStaleSeconds,
+        defaultLatencyMs: config.defaultLatencyMs,
+        killSwitchDrawdownPercent: config.killSwitchDrawdownPercent,
         finalEntryBufferSeconds: config.finalEntryBufferSeconds,
         forcedRiskCheckSeconds: config.forcedRiskCheckSeconds,
         minNetArbEdge: config.minNetArbEdge,
@@ -73,7 +86,13 @@ export function createDashboardServer({ config, portfolio, riskManager, logger, 
         makerFeeRate: config.makerFeeRate,
         marketMakingMinEdge: config.marketMakingMinEdge,
         marketMakingMaxDataAgeMs: config.marketMakingMaxDataAgeMs,
-        strategyLabAllMarkets: config.strategyLabAllMarkets
+        marketMakingMaxQueueDepthMultiplier: config.marketMakingMaxQueueDepthMultiplier,
+        marketMakingAdverseSelectionBps: config.marketMakingAdverseSelectionBps,
+        strategyLabAllMarkets: config.strategyLabAllMarkets,
+        paperLearningEnabled: config.paperLearningEnabled,
+        paperLearningAutoApply: config.paperLearningAutoApply,
+        paperLearningMinSignals: config.paperLearningMinSignals,
+        paperLearningMinTrades: config.paperLearningMinTrades
       }
     };
   };
@@ -94,7 +113,7 @@ export function createDashboardServer({ config, portfolio, riskManager, logger, 
     };
 
     writeState();
-    const timer = setInterval(writeState, 1000);
+    const timer = setInterval(writeState, 500);
 
     req.on("close", () => {
       clearInterval(timer);

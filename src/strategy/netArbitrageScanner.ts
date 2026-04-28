@@ -1,7 +1,7 @@
 import { logger } from "../logger";
+import { StrategyExecutionPort } from "../execution/executionLayer";
 import { ClobPublicClient } from "../polymarket/clobPublicClient";
 import { StrategyRiskManager } from "../risk/strategyRiskManager";
-import { StrategyPaperTrader } from "../trading/strategyPaperTrader";
 import {
   BinaryMarketCandidate,
   BotConfig,
@@ -27,7 +27,7 @@ export class NetArbitrageScanner {
   constructor(
     private readonly clobClient: ClobPublicClient,
     private readonly store: StrategyStateStore,
-    private readonly paperTrader: StrategyPaperTrader,
+    private readonly execution: StrategyExecutionPort,
     private readonly risk: StrategyRiskManager,
     private readonly config: Pick<
       BotConfig,
@@ -51,14 +51,19 @@ export class NetArbitrageScanner {
   async scan(candidates: BinaryMarketCandidate[], portfolio: PortfolioSnapshot): Promise<void> {
     const started = Date.now();
     let scanned = 0;
+    const scanCandidates = candidates.slice(0, 16);
 
-    for (const candidate of candidates.slice(0, 16)) {
-      scanned += 1;
-      try {
-        await this.scanCandidate(candidate, portfolio, started);
-      } catch (error) {
-        this.reject(candidate, [error instanceof Error ? error.message : String(error)]);
-      }
+    // Small batches cut scan latency without hammering the public CLOB API with
+    // every token request at once.
+    for (const batch of chunks(scanCandidates, 4)) {
+      scanned += batch.length;
+      await Promise.all(
+        batch.map((candidate) =>
+          this.scanCandidate(candidate, portfolio, started).catch((error) => {
+            this.reject(candidate, [error instanceof Error ? error.message : String(error)]);
+          })
+        )
+      );
     }
 
     logger.info("Net arbitrage scan completed.", { scanned, latencyMs: Date.now() - started });
@@ -179,7 +184,7 @@ export class NetArbitrageScanner {
     }
 
     this.store.addOpportunity(opportunity);
-    const trade = this.paperTrader.executePairedArbitrage(opportunity, yesFill, noFill);
+    const trade = this.execution.executePairedArbitrage(opportunity, yesFill, noFill);
     this.risk.recordFill(trade.fillRate);
   }
 
@@ -281,4 +286,12 @@ function lossCauseForReasons(reasons: string[]) {
   if (text.includes("slippage") || text.includes("spread")) return "slippage" as const;
   if (text.includes("edge")) return "negative-edge" as const;
   return undefined;
+}
+
+function chunks<T>(items: T[], size: number): T[][] {
+  const output: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    output.push(items.slice(index, index + size));
+  }
+  return output;
 }

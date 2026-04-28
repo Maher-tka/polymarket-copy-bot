@@ -1,6 +1,6 @@
 import { logger } from "../logger";
+import { StrategyExecutionPort } from "../execution/executionLayer";
 import { ClobPublicClient } from "../polymarket/clobPublicClient";
-import { StrategyPaperTrader } from "../trading/strategyPaperTrader";
 import { BinaryMarketCandidate, BotConfig, FillSimulation, PortfolioSnapshot, SimulatedMakerOrder, StrategyOpportunity } from "../types";
 import {
   bestAsk,
@@ -19,7 +19,7 @@ export class MakerArbitrageMode {
   constructor(
     private readonly clobClient: ClobPublicClient,
     private readonly store: StrategyStateStore,
-    private readonly paperTrader: StrategyPaperTrader,
+    private readonly execution: StrategyExecutionPort,
     private readonly config: Pick<
       BotConfig,
       | "makerOrderTimeoutMs"
@@ -240,7 +240,7 @@ export class MakerArbitrageMode {
           edge: opportunity.edge,
           createdAt: new Date().toISOString()
         });
-        const trade = this.paperTrader.executeSingleLeg("maker-arbitrage", opportunity, fill, -(order.hedgeMaxLossUsd ?? 0));
+        const trade = this.execution.executeSingleLeg("maker-arbitrage", opportunity, fill, -(order.hedgeMaxLossUsd ?? 0));
         this.store.updatePaperTrade(trade.id, {
           failedHedge: true,
           lossCause: "failed-hedge",
@@ -248,7 +248,7 @@ export class MakerArbitrageMode {
         });
         logger.warn("Simulated maker arbitrage hedge failed.", { orderId: order.id, fillRate: hedgeFill?.fillRate ?? 0 });
       } else {
-        this.paperTrader.executePairedArbitrage(opportunity, fill, hedgeFill, "maker-arbitrage");
+        this.execution.executePairedArbitrage(opportunity, fill, hedgeFill, "maker-arbitrage");
         logger.info("Simulated maker arbitrage order filled and hedged.", { orderId: order.id, fillRate: hedgeFill.fillRate });
       }
     }

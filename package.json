@@ -1,7 +1,7 @@
 {
   "name": "polymarket-copy-bot",
   "version": "0.1.0",
-  "description": "Version 1 paper trading copy bot for Polymarket public data.",
+  "description": "Paper-first Polymarket strategy lab for research, backtesting, and safe execution experiments.",
   "private": true,
   "scripts": {
     "start": "tsx src/index.ts",
@@ -11,6 +11,8 @@
     "build": "npm run dashboard:build && tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json --noEmit",
     "diagnose": "tsx src/diagnostics/diagnose.ts",
+    "preflight": "tsx src/diagnostics/preflight.ts",
+    "auto-redeem": "tsx src/diagnostics/autoRedeem.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

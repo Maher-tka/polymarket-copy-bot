@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import {
   Activity,
@@ -6,25 +6,30 @@ import {
   BarChart3,
   Bell,
   Bot,
+  CheckCircle2,
   CircleDollarSign,
   Clock3,
   Cpu,
+  Crosshair,
   Download,
   Gauge,
   History,
   LayoutDashboard,
+  LineChart,
   ListFilter,
   Lock,
   Pause,
   Play,
+  Power,
   Radio,
   ScrollText,
   Search,
   Settings,
   ShieldAlert,
   Signal,
-  Skull,
   SlidersHorizontal,
+  Target,
+  TimerReset,
   TrendingDown,
   TrendingUp,
   Users,
@@ -57,19 +62,21 @@ import {
   LogEvent,
   PaperPosition,
   SkippedTrade,
+  StrategyPaperTrade,
   StrategyName,
   TraderScore
 } from "@/lib/types";
 import { clamp, cn, duration, money, percent, shortWallet, timeAgo } from "@/lib/utils";
 
 const NAV_ITEMS = [
-  { label: "Dashboard", icon: LayoutDashboard },
-  { label: "Positions", icon: Wallet },
-  { label: "Signals", icon: Signal },
-  { label: "Traders", icon: Users },
-  { label: "Risk", icon: ShieldAlert },
-  { label: "Logs", icon: ScrollText },
-  { label: "Settings", icon: Settings }
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "history", label: "Win/Loss", icon: History },
+  { id: "positions", label: "Positions", icon: Wallet },
+  { id: "signals", label: "Signals", icon: Signal },
+  { id: "traders", label: "Traders", icon: Users },
+  { id: "risk", label: "Risk", icon: ShieldAlert },
+  { id: "logs", label: "Logs", icon: ScrollText },
+  { id: "settings", label: "Settings", icon: Settings }
 ];
 
 const SUMMARY_KEYS = [
@@ -90,6 +97,12 @@ const STRATEGY_TABS: Array<{ id: StrategyName; label: string }> = [
   { id: "whale-tracker", label: "Whale Tracker" }
 ];
 
+const STRATEGY_FILTERS: Array<{ id: "all" | StrategyName; label: string }> = [
+  { id: "all", label: "All strategies" },
+  ...STRATEGY_TABS,
+  { id: "btc-momentum-filter", label: "BTC Momentum Filter" }
+];
+
 type SummaryKey = (typeof SUMMARY_KEYS)[number];
 
 interface Filters {
@@ -99,6 +112,8 @@ interface Filters {
   logLevel: string;
   logSearch: string;
   tradeResult: string;
+  historyResult: string;
+  historyStrategy: string;
 }
 
 export function App() {
@@ -109,43 +124,46 @@ export function App() {
   const [sseConnected, setSseConnected] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>();
   const [strategyTab, setStrategyTab] = useState<StrategyName>("net-arbitrage");
+  const [activeSection, setActiveSection] = useState("dashboard");
   const [filters, setFilters] = useState<Filters>({
     signalStatus: "all",
     signalSide: "all",
     signalSearch: "",
     logLevel: "all",
     logSearch: "",
-    tradeResult: "all"
+    tradeResult: "all",
+    historyResult: "all",
+    historyStrategy: "all"
   });
   const previousSummary = useRef<Record<SummaryKey, number> | null>(null);
 
+  const applyDashboardState = useCallback((next: DashboardState) => {
+    setState(next);
+    setLoading(false);
+    setError(null);
+    const now = new Date().toLocaleTimeString();
+    setLastUpdated(now);
+    setEquityHistory((history) =>
+      [
+        ...history,
+        {
+          time: now,
+          equity: next.portfolio.equityUsd,
+          realized: next.portfolio.realizedPnlUsd,
+          unrealized: next.portfolio.unrealizedPnlUsd
+        }
+      ].slice(-120)
+    );
+  }, []);
+
   useEffect(() => {
     let fallbackTimer: ReturnType<typeof setInterval> | undefined;
-
-    const applyState = (next: DashboardState) => {
-      setState(next);
-      setLoading(false);
-      setError(null);
-      const now = new Date().toLocaleTimeString();
-      setLastUpdated(now);
-      setEquityHistory((history) =>
-        [
-          ...history,
-          {
-            time: now,
-            equity: next.portfolio.equityUsd,
-            realized: next.portfolio.realizedPnlUsd,
-            unrealized: next.portfolio.unrealizedPnlUsd
-          }
-        ].slice(-120)
-      );
-    };
 
     const fetchState = async () => {
       try {
         const response = await fetch("/api/state");
         if (!response.ok) throw new Error(`API returned ${response.status}`);
-        applyState((await response.json()) as DashboardState);
+        applyDashboardState((await response.json()) as DashboardState);
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Could not load dashboard state.");
         setLoading(false);
@@ -159,7 +177,7 @@ export function App() {
       source.onopen = () => setSseConnected(true);
       source.onmessage = (event) => {
         setSseConnected(true);
-        applyState(JSON.parse(event.data) as DashboardState);
+        applyDashboardState(JSON.parse(event.data) as DashboardState);
       };
       source.onerror = () => {
         setSseConnected(false);
@@ -177,7 +195,7 @@ export function App() {
     return () => {
       if (fallbackTimer) clearInterval(fallbackTimer);
     };
-  }, []);
+  }, [applyDashboardState]);
 
   const summaryValues = useMemo(() => {
     if (!state) return null;
@@ -253,12 +271,42 @@ export function App() {
     });
   }, [filters.tradeResult, state]);
 
-  const runAction = async (path: string, body?: unknown) => {
-    await fetch(path, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body)
+  const filteredWinLossTrades = useMemo(() => {
+    if (!state?.strategies) return [];
+    return state.strategies.paperTrades.filter((trade) => {
+      const pnl = trade.realizedPnlUsd + trade.unrealizedPnlUsd;
+      const matchesResult =
+        filters.historyResult === "all" ||
+        (filters.historyResult === "win" && pnl > 0) ||
+        (filters.historyResult === "loss" && pnl < 0) ||
+        (filters.historyResult === "flat" && pnl === 0) ||
+        (filters.historyResult === "open" && !trade.closedAt);
+      const matchesStrategy = filters.historyStrategy === "all" || trade.strategy === filters.historyStrategy;
+      return matchesResult && matchesStrategy;
     });
+  }, [filters.historyResult, filters.historyStrategy, state]);
+
+  const runAction = async (path: string, body?: unknown) => {
+    try {
+      const actionResponse = await fetch(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body)
+      });
+      if (!actionResponse.ok) throw new Error(`Action failed with ${actionResponse.status}`);
+
+      const stateResponse = await fetch("/api/state");
+      if (stateResponse.ok) {
+        applyDashboardState((await stateResponse.json()) as DashboardState);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Action failed.");
+    }
+  };
+
+  const navigateToSection = (sectionId: string) => {
+    setActiveSection(sectionId);
+    document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   if (loading) return <LoadingScreen />;
@@ -272,7 +320,7 @@ export function App() {
   return (
     <div className="min-h-screen bg-background terminal-grid">
       <div className="flex min-h-screen">
-        <Sidebar />
+        <Sidebar activeSection={activeSection} onNavigate={navigateToSection} />
 
         <div className="min-w-0 flex-1">
           <Header
@@ -282,39 +330,60 @@ export function App() {
             sseConnected={sseConnected}
             onPause={() => runAction("/api/pause")}
             onResume={() => runAction("/api/resume")}
-            onKill={() => runAction("/api/kill-switch", { active: true })}
+            onKill={() => runAction("/api/kill-switch", { active: !state.risk.killSwitchActive })}
           />
 
-          <main className="space-y-4 p-4 lg:p-6">
-            <PaperModeBanner mode={state.mode} />
+          <main className="space-y-4 p-4 pb-24 lg:p-6 xl:pb-6">
+            <section id="dashboard" className="scroll-mt-24 space-y-4">
+              <PaperModeBanner mode={state.mode} />
+              <TradingCommandCenter state={state} sseConnected={sseConnected} />
+              <PnlStatusPanel state={state} />
+              <LearningPanel state={state} />
+              <StrategyPulsePanel state={state} />
+              <StrategySummaryCards state={state} />
+              <WinLossHistoryPanel trades={filteredWinLossTrades} state={state} filters={filters} setFilters={setFilters} />
 
-            <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
-              <SummaryCard title="Balance" value={money(state.portfolio.balanceUsd)} icon={CircleDollarSign} changed={changedKeys.has("balanceUsd")} />
-              <SummaryCard title="Equity" value={money(state.portfolio.equityUsd)} icon={Wallet} changed={changedKeys.has("equityUsd")} />
-              <SummaryCard
-                title="Realized PnL"
-                value={money(state.portfolio.realizedPnlUsd)}
-                icon={TrendingUp}
-                tone={state.portfolio.realizedPnlUsd >= 0 ? "positive" : "negative"}
-                changed={changedKeys.has("realizedPnlUsd")}
-              />
-              <SummaryCard
-                title="Unrealized PnL"
-                value={money(state.portfolio.unrealizedPnlUsd)}
-                icon={Activity}
-                tone={state.portfolio.unrealizedPnlUsd >= 0 ? "positive" : "negative"}
-                changed={changedKeys.has("unrealizedPnlUsd")}
-              />
-              <SummaryCard
-                title="Daily PnL"
-                value={money(state.portfolio.dailyRealizedPnlUsd)}
-                icon={BarChart3}
-                tone={state.portfolio.dailyRealizedPnlUsd >= 0 ? "positive" : "negative"}
-                changed={changedKeys.has("dailyRealizedPnlUsd")}
-              />
-              <SummaryCard title="Win Rate" value={percent(state.portfolio.winRate)} icon={Gauge} changed={changedKeys.has("winRate")} />
-              <SummaryCard title="Max Drawdown" value={money(state.portfolio.maxDrawdownUsd)} icon={TrendingDown} tone="negative" changed={changedKeys.has("maxDrawdownUsd")} />
-              <SummaryCard title="Open Positions" value={String(state.portfolio.openPositions.length)} icon={History} changed={changedKeys.has("openPositions")} />
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-sm font-semibold">Copy / Demo Portfolio</h2>
+                    <p className="text-xs text-muted-foreground">
+                      This account view is separate from strategy-lab performance. Random demo copy signals are only for testing the pipeline.
+                    </p>
+                  </div>
+                  <Badge variant={state.safeConfig.simulateSignals ? "warning" : "success"}>
+                    SIMULATE_SIGNALS={state.safeConfig.simulateSignals ? "true" : "false"}
+                  </Badge>
+                </div>
+                <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
+                  <SummaryCard title="Balance" value={money(state.portfolio.balanceUsd)} icon={CircleDollarSign} changed={changedKeys.has("balanceUsd")} />
+                  <SummaryCard title="Equity" value={money(state.portfolio.equityUsd)} icon={Wallet} changed={changedKeys.has("equityUsd")} />
+                  <SummaryCard
+                    title="Realized PnL"
+                    value={money(state.portfolio.realizedPnlUsd)}
+                    icon={TrendingUp}
+                    tone={state.portfolio.realizedPnlUsd >= 0 ? "positive" : "negative"}
+                    changed={changedKeys.has("realizedPnlUsd")}
+                  />
+                  <SummaryCard
+                    title="Unrealized PnL"
+                    value={money(state.portfolio.unrealizedPnlUsd)}
+                    icon={Activity}
+                    tone={state.portfolio.unrealizedPnlUsd >= 0 ? "positive" : "negative"}
+                    changed={changedKeys.has("unrealizedPnlUsd")}
+                  />
+                  <SummaryCard
+                    title="Daily PnL"
+                    value={money(state.portfolio.dailyRealizedPnlUsd)}
+                    icon={BarChart3}
+                    tone={state.portfolio.dailyRealizedPnlUsd >= 0 ? "positive" : "negative"}
+                    changed={changedKeys.has("dailyRealizedPnlUsd")}
+                  />
+                  <SummaryCard title="Win Rate" value={percent(state.portfolio.winRate)} icon={Gauge} changed={changedKeys.has("winRate")} />
+                  <SummaryCard title="Max Drawdown" value={money(state.portfolio.maxDrawdownUsd)} icon={TrendingDown} tone="negative" changed={changedKeys.has("maxDrawdownUsd")} />
+                  <SummaryCard title="Open Positions" value={String(state.portfolio.openPositions.length)} icon={History} changed={changedKeys.has("openPositions")} />
+                </section>
+              </div>
             </section>
 
             <StrategyTabsPanel
@@ -328,33 +397,50 @@ export function App() {
             <WhyBotIsLosingPanel state={state} />
 
             <section className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(380px,0.9fr)]">
-              <div className="space-y-4">
+              <div id="positions" className="scroll-mt-24 space-y-4">
                 <EquityChart data={equityHistory} />
                 <OpenPositionsTable positions={state.portfolio.openPositions} />
                 <ClosedPositionsTable positions={filteredClosedPositions} filters={filters} setFilters={setFilters} />
               </div>
 
               <div className="space-y-4">
-                <SignalsFeed signals={filteredSignals} state={state} skippedBySignal={skippedBySignal} filters={filters} setFilters={setFilters} />
-                <WatchedTradersTable traders={state.watchedTraders} />
-                <RiskPanel state={state} exposureUsd={exposureUsd} exposureUsage={exposureUsage} dailyLossUsed={dailyLossUsed} />
-                <HealthPanel state={state} sseConnected={sseConnected} />
+                <div id="signals" className="scroll-mt-24">
+                  <SignalsFeed signals={filteredSignals} state={state} skippedBySignal={skippedBySignal} filters={filters} setFilters={setFilters} />
+                </div>
+                <div id="traders" className="scroll-mt-24">
+                  <WatchedTradersTable traders={state.watchedTraders} />
+                </div>
+                <div id="risk" className="scroll-mt-24 space-y-4">
+                  <RiskPanel state={state} exposureUsd={exposureUsd} exposureUsage={exposureUsage} dailyLossUsed={dailyLossUsed} />
+                  <HealthPanel state={state} sseConnected={sseConnected} />
+                </div>
               </div>
             </section>
 
-            <section className="grid gap-4 xl:grid-cols-3">
+            <section id="logs" className="grid scroll-mt-24 gap-4 xl:grid-cols-3">
               <SkippedTradesPanel skipped={state.portfolio.skippedTrades} />
               <LogsPanel title="Bot Logs" logs={filteredLogs} filters={filters} setFilters={setFilters} />
               <LatencyPanel state={state} logs={state.logs} />
             </section>
+
+            <section id="settings" className="scroll-mt-24">
+              <SettingsPanel state={state} />
+            </section>
           </main>
         </div>
       </div>
+      <MobileNav activeSection={activeSection} onNavigate={navigateToSection} />
     </div>
   );
 }
 
-function Sidebar() {
+function Sidebar({
+  activeSection,
+  onNavigate
+}: {
+  activeSection: string;
+  onNavigate: (sectionId: string) => void;
+}) {
   return (
     <aside className="hidden w-64 shrink-0 border-r border-border bg-card/70 p-4 backdrop-blur xl:block">
       <div className="mb-8 flex items-center gap-3">
@@ -370,9 +456,11 @@ function Sidebar() {
         {NAV_ITEMS.map((item, index) => (
           <button
             key={item.label}
+            type="button"
+            onClick={() => onNavigate(item.id)}
             className={cn(
               "flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground transition hover:bg-accent hover:text-foreground",
-              index === 0 && "bg-accent text-foreground"
+              (activeSection === item.id || (index === 0 && activeSection === "dashboard")) && "bg-accent text-foreground"
             )}
           >
             <item.icon className="h-4 w-4" />
@@ -388,6 +476,40 @@ function Sidebar() {
         <p className="mt-2 text-xs leading-5 text-muted-foreground">Live order placement remains disabled in code.</p>
       </div>
     </aside>
+  );
+}
+
+function MobileNav({
+  activeSection,
+  onNavigate
+}: {
+  activeSection: string;
+  onNavigate: (sectionId: string) => void;
+}) {
+  const mobileItems = NAV_ITEMS.slice(0, 6);
+  return (
+    <nav className="fixed inset-x-3 bottom-3 z-30 rounded-lg border border-border bg-card/95 p-1.5 shadow-glow backdrop-blur xl:hidden">
+      <div className="grid grid-cols-6 gap-1">
+        {mobileItems.map((item) => {
+          const active = activeSection === item.id || (item.id === "dashboard" && activeSection === "dashboard");
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onNavigate(item.id)}
+              className={cn(
+                "flex h-12 flex-col items-center justify-center gap-1 rounded-md text-[10px] font-medium text-muted-foreground transition",
+                active && "bg-primary/15 text-primary"
+              )}
+              aria-label={item.label}
+            >
+              <item.icon className="h-4 w-4" />
+              <span className="max-w-full truncate">{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </nav>
   );
 }
 
@@ -411,9 +533,9 @@ function Header({
   return (
     <header className="sticky top-0 z-20 border-b border-border bg-background/88 px-4 py-3 backdrop-blur lg:px-6">
       <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
-        <div>
+        <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-xl font-semibold tracking-normal">Polymarket Copy-Trading Bot</h1>
+            <h1 className="min-w-0 text-xl font-semibold tracking-normal sm:text-2xl">Polymarket Strategy Lab</h1>
             <ModeBadge mode={state.mode} />
             <Badge variant={state.strategies?.activeMode === "Real" ? "destructive" : "default"}>
               {state.strategies?.activeMode ?? "Paper"} mode
@@ -432,22 +554,384 @@ function Header({
             </Badge>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={onPause}>
+        <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+          <Button className="w-full sm:w-auto" variant="outline" onClick={onPause}>
             <Pause className="h-4 w-4" />
             Pause
           </Button>
-          <Button variant="secondary" onClick={onResume}>
+          <Button className="w-full sm:w-auto" variant="secondary" onClick={onResume}>
             <Play className="h-4 w-4" />
             Resume
           </Button>
-          <Button variant="destructive" onClick={onKill}>
-            <Skull className="h-4 w-4" />
-            Kill Switch
+          <Button className="w-full sm:w-auto" variant={state.risk.killSwitchActive ? "secondary" : "destructive"} onClick={onKill}>
+            <Power className="h-4 w-4" />
+            {state.risk.killSwitchActive ? "Clear Kill" : "Kill Switch"}
           </Button>
         </div>
       </div>
     </header>
+  );
+}
+
+function TradingCommandCenter({ state, sseConnected }: { state: DashboardState; sseConnected: boolean }) {
+  const summary = state.strategies?.losingDiagnostics;
+  const best = summary?.strategyRanking[0];
+  const trades = summary?.tradesTaken ?? 0;
+  const signals = summary?.totalSignals ?? 0;
+  const rejected = summary?.rejectedSignals ?? 0;
+  const rejectionRate = signals > 0 ? rejected / signals : 0;
+  const netPnl = summary?.netPnlUsd ?? 0;
+  const winRate = summary?.winRate ?? 0;
+  const averageDelay = summary?.averageDataDelayMs ?? 0;
+  const delayOk = averageDelay <= state.safeConfig.maxDataAgeMs;
+  const realLocked = state.safeConfig.paperTradingOnly && !state.safeConfig.realTradingEnabled && state.mode === "PAPER";
+  const enoughSample = trades >= 100 || signals >= 1000;
+  const paperCandidate = Boolean(best && best.netPnlUsd > 0 && best.winRate >= 0.6 && enoughSample);
+  const recommendation = !realLocked
+    ? "Lock real mode"
+    : !delayOk
+      ? "Reduce stale quotes"
+      : !enoughSample
+        ? "Collect more paper data"
+        : paperCandidate
+          ? "Research candidate"
+          : "Stay selective";
+
+  return (
+    <section className="grid gap-3 2xl:grid-cols-[minmax(0,1.15fr)_minmax(520px,0.85fr)]">
+      <div className="terminal-panel p-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">
+                <Crosshair className="h-3 w-3" />
+                Command Center
+              </Badge>
+              <Badge variant={realLocked ? "success" : "destructive"}>{realLocked ? "Real trading locked" : "Unsafe live flag"}</Badge>
+              <Badge variant={paperCandidate ? "success" : "warning"}>{recommendation}</Badge>
+            </div>
+            <div className="mt-3 text-2xl font-semibold tracking-normal sm:text-3xl">
+              {best ? strategyLabel(best.strategy) : "Collecting paper evidence"}
+            </div>
+            <div className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
+              {best
+                ? `${money(best.netPnlUsd)} net, ${percent(best.winRate)} win rate, ${best.trades} trades, ${best.signals} signals.`
+                : "Waiting for strategy diagnostics from the paper engine."}
+            </div>
+          </div>
+
+          <div className="grid min-w-0 grid-cols-2 gap-2 sm:min-w-[360px]">
+            <MiniDatum label="Mode" value={state.mode} />
+            <MiniDatum label="Bot" value={state.risk.killSwitchActive ? "Killed" : state.risk.paused ? "Paused" : "Running"} />
+            <MiniDatum label="Stream" value={sseConnected ? "SSE live" : "Fallback"} />
+            <MiniDatum label="WS" value={state.status.marketWebSocketConnected ? "Connected" : "Disconnected"} />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <CommandTile
+          icon={Lock}
+          label="Safety Lock"
+          value={realLocked ? "Paper only" : "Check config"}
+          detail={state.safeConfig.realTradingEnabled ? "Real flag detected" : "No real orders"}
+          tone={realLocked ? "positive" : "negative"}
+        />
+        <CommandTile
+          icon={LineChart}
+          label="Paper Edge"
+          value={money(netPnl)}
+          detail={`${percent(winRate)} win rate`}
+          tone={netPnl >= 0 ? "positive" : "negative"}
+        />
+        <CommandTile
+          icon={Target}
+          label="Selectivity"
+          value={percent(rejectionRate)}
+          detail={`${rejected} rejected of ${signals}`}
+          tone={rejectionRate >= 0.8 ? "positive" : "neutral"}
+        />
+        <CommandTile
+          icon={TimerReset}
+          label="Quote Delay"
+          value={`${averageDelay.toFixed(0)}ms`}
+          detail={`limit ${state.safeConfig.maxDataAgeMs}ms`}
+          tone={delayOk ? "positive" : "negative"}
+        />
+      </div>
+    </section>
+  );
+}
+
+function CommandTile({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  tone = "neutral"
+}: {
+  icon: typeof Activity;
+  label: string;
+  value: string;
+  detail: string;
+  tone?: "neutral" | "positive" | "negative";
+}) {
+  return (
+    <div
+      className={cn(
+        "terminal-panel p-4 transition hover:border-primary/35",
+        tone === "positive" && "border-emerald-500/25",
+        tone === "negative" && "border-red-500/25"
+      )}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs font-medium uppercase text-muted-foreground">{label}</div>
+        <Icon
+          className={cn(
+            "h-4 w-4",
+            tone === "positive" ? "text-emerald-300" : tone === "negative" ? "text-red-300" : "text-muted-foreground"
+          )}
+        />
+      </div>
+      <div
+        className={cn(
+          "mt-3 truncate text-2xl font-semibold tracking-normal",
+          tone === "positive" ? "text-emerald-300" : tone === "negative" ? "text-red-300" : "text-foreground"
+        )}
+      >
+        {value}
+      </div>
+      <div className="mt-1 truncate text-xs text-muted-foreground">{detail}</div>
+    </div>
+  );
+}
+
+function StrategyPulsePanel({ state }: { state: DashboardState }) {
+  const summary = state.strategies?.losingDiagnostics;
+  const best = summary?.strategyRanking[0];
+  const bestIsCandidate = Boolean(best && best.winRate >= 0.6 && best.netPnlUsd >= 0);
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border px-4 py-3",
+        bestIsCandidate ? "border-emerald-500/30 bg-emerald-500/10" : "border-amber-500/30 bg-amber-500/10"
+      )}
+    >
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-start gap-3">
+          <div className={cn("mt-0.5 rounded-md p-2", bestIsCandidate ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300")}>
+            {bestIsCandidate ? <TrendingUp className="h-5 w-5" /> : <AlertTriangle className="h-5 w-5" />}
+          </div>
+          <div>
+            <div className="text-sm font-semibold">
+              {best ? `${best.label} is the current best paper strategy` : "Strategy lab is collecting paper data"}
+            </div>
+            <div className="mt-1 text-xs leading-5 text-muted-foreground">
+              {best
+                ? `${percent(best.winRate)} win rate, ${money(best.netPnlUsd)} net PnL, ${best.trades} paper trades, ${best.signals} signals. This is paper-only and still locked away from real orders.`
+                : "No strategy ranking is available yet. The engine needs live quotes before it can rank strategies."}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Badge variant={state.safeConfig.paperTradingOnly ? "success" : "destructive"}>PAPER_TRADING_ONLY={String(state.safeConfig.paperTradingOnly)}</Badge>
+          <Badge variant={state.safeConfig.realTradingEnabled ? "destructive" : "success"}>REAL_TRADING_ENABLED={String(state.safeConfig.realTradingEnabled)}</Badge>
+          <Badge variant={state.safeConfig.simulateSignals ? "warning" : "success"}>Random demo copy {state.safeConfig.simulateSignals ? "ON" : "OFF"}</Badge>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StrategySummaryCards({ state }: { state: DashboardState }) {
+  const summary = state.strategies?.losingDiagnostics;
+  const best = summary?.strategyRanking[0];
+  const strategyTrades = summary?.tradesTaken ?? 0;
+  const strategyWinRate = summary?.winRate ?? 0;
+  const strategyNetPnl = summary?.netPnlUsd ?? 0;
+  const strategyGrossPnl = summary?.grossPnlUsd ?? 0;
+  const rejected = summary?.rejectedSignals ?? 0;
+  const totalSignals = summary?.totalSignals ?? 0;
+  const avgActualEdge = summary?.averageActualEdge ?? 0;
+  const avgDelay = summary?.averageDataDelayMs ?? 0;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-semibold">Strategy Lab Performance</h2>
+          <p className="text-xs text-muted-foreground">
+            These are the realistic paper strategy metrics after fees, slippage, stale-data checks, depth checks, and partial-fill rejection.
+          </p>
+        </div>
+        <Badge variant={state.strategies?.realTradingEnabled ? "destructive" : "success"}>Real trading locked</Badge>
+      </div>
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
+        <SummaryCard title="Best Strategy" value={best ? strategyLabel(best.strategy) : "Collecting"} icon={BarChart3} />
+        <SummaryCard title="Strategy Net PnL" value={money(strategyNetPnl)} icon={TrendingUp} tone={strategyNetPnl >= 0 ? "positive" : "negative"} />
+        <SummaryCard title="Strategy Gross" value={money(strategyGrossPnl)} icon={CircleDollarSign} tone={strategyGrossPnl >= 0 ? "positive" : "negative"} />
+        <SummaryCard title="Strategy Win Rate" value={percent(strategyWinRate)} icon={Gauge} tone={strategyWinRate >= 0.6 ? "positive" : "negative"} />
+        <SummaryCard title="Paper Trades" value={String(strategyTrades)} icon={History} />
+        <SummaryCard title="Rejected Signals" value={`${rejected}/${Math.max(totalSignals, 0)}`} icon={ShieldAlert} tone={rejected > strategyTrades ? "positive" : "neutral"} />
+        <SummaryCard title="Avg Actual Edge" value={`${(avgActualEdge * 100).toFixed(2)}%`} icon={Activity} tone={avgActualEdge >= 0 ? "positive" : "negative"} />
+        <SummaryCard title="Avg Data Delay" value={`${avgDelay.toFixed(0)}ms`} icon={Clock3} tone={avgDelay <= state.safeConfig.maxDataAgeMs ? "positive" : "negative"} />
+      </section>
+    </div>
+  );
+}
+
+function WinLossHistoryPanel({
+  trades,
+  state,
+  filters,
+  setFilters
+}: {
+  trades: StrategyPaperTrade[];
+  state: DashboardState;
+  filters: Filters;
+  setFilters: Dispatch<SetStateAction<Filters>>;
+}) {
+  const allTrades = state.strategies?.paperTrades ?? [];
+  const totals = allTrades.reduce(
+    (acc, trade) => {
+      const pnl = strategyTradePnl(trade);
+      acc.netPnl += pnl;
+      acc.grossPnl += trade.grossPnlUsd;
+      acc.fees += trade.feesUsd;
+      acc.slippage += trade.slippageUsd;
+      if (!trade.closedAt) acc.open += 1;
+      if (pnl > 0) acc.wins += 1;
+      else if (pnl < 0) acc.losses += 1;
+      else acc.flat += 1;
+      return acc;
+    },
+    { wins: 0, losses: 0, flat: 0, open: 0, netPnl: 0, grossPnl: 0, fees: 0, slippage: 0 }
+  );
+  const finishedTrades = Math.max(1, totals.wins + totals.losses + totals.flat);
+  const bestTrade = allTrades.reduce<StrategyPaperTrade | undefined>(
+    (best, trade) => (!best || strategyTradePnl(trade) > strategyTradePnl(best) ? trade : best),
+    undefined
+  );
+  const worstTrade = allTrades.reduce<StrategyPaperTrade | undefined>(
+    (worst, trade) => (!worst || strategyTradePnl(trade) < strategyTradePnl(worst) ? trade : worst),
+    undefined
+  );
+
+  return (
+    <section id="history" className="scroll-mt-24">
+      <Card className="border-primary/20 bg-card/95">
+        <CardHeader className="items-start">
+          <div>
+            <CardTitle>Win / Loss History</CardTitle>
+            <div className="mt-1 text-xs text-muted-foreground">
+              All strategy-lab paper trades across every strategy. This is separate from the copy/demo closed positions table.
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge variant={totals.netPnl >= 0 ? "success" : "destructive"}>{money(totals.netPnl)} net</Badge>
+            <Badge variant="outline">{allTrades.length} trades</Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-8">
+            <MetricTile label="Wins" value={String(totals.wins)} />
+            <MetricTile label="Losses" value={String(totals.losses)} positive={totals.losses === 0} />
+            <MetricTile label="Flat" value={String(totals.flat)} />
+            <MetricTile label="Open" value={String(totals.open)} />
+            <MetricTile label="Win Rate" value={percent(totals.wins / finishedTrades)} />
+            <MetricTile label="Gross PnL" value={money(totals.grossPnl)} positive={totals.grossPnl >= 0} />
+            <MetricTile label="Fees" value={money(totals.fees)} positive={false} />
+            <MetricTile label="Slippage" value={money(totals.slippage)} positive={false} />
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1.2fr]">
+            <div className="rounded-lg border border-border bg-background/55 p-3">
+              <RiskLine
+                label="Best trade"
+                value={bestTrade ? `${money(strategyTradePnl(bestTrade))} ${strategyLabel(bestTrade.strategy)}` : "Waiting"}
+              />
+            </div>
+            <div className="rounded-lg border border-border bg-background/55 p-3">
+              <RiskLine
+                label="Worst trade"
+                value={worstTrade ? `${money(strategyTradePnl(worstTrade))} ${strategyLabel(worstTrade.strategy)}` : "Waiting"}
+                danger={Boolean(worstTrade && strategyTradePnl(worstTrade) < 0)}
+              />
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <select
+                className="select-input"
+                value={filters.historyResult}
+                onChange={(event) => setFilters((prev) => ({ ...prev, historyResult: event.target.value }))}
+              >
+                <option value="all">All results</option>
+                <option value="win">Wins only</option>
+                <option value="loss">Losses only</option>
+                <option value="flat">Flat only</option>
+                <option value="open">Open only</option>
+              </select>
+              <select
+                className="select-input"
+                value={filters.historyStrategy}
+                onChange={(event) => setFilters((prev) => ({ ...prev, historyStrategy: event.target.value }))}
+              >
+                {STRATEGY_FILTERS.map((item) => (
+                  <option key={item.id} value={item.id}>{item.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {allTrades.length === 0 ? (
+            <EmptyState icon={History} title="No strategy trade history yet" body="The strategy engine has not produced paper fills in this run yet. Rejected signals are still visible in diagnostics." />
+          ) : trades.length === 0 ? (
+            <EmptyState icon={ListFilter} title="No trades match these filters" body="Switch result or strategy filters to see the full paper win/loss ledger." />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1180px] border-separate border-spacing-0">
+                <thead className="table-head">
+                  <tr>
+                    {["Result", "Strategy", "Market", "Side", "Net PnL", "Gross", "Fees", "Slippage", "Edge", "Fill", "Opened", "Closed / Status", "Why"].map((head) => (
+                      <th key={head} className="px-3 py-2">{head}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {trades.slice(0, 80).map((trade) => {
+                    const pnl = strategyTradePnl(trade);
+                    return (
+                      <tr key={trade.id} className="transition hover:bg-accent/35">
+                        <td className="table-cell"><TradeResultBadge trade={trade} /></td>
+                        <td className="table-cell">{strategyLabel(trade.strategy)}</td>
+                        <td className="table-cell max-w-[280px]">
+                          <div className="truncate font-medium">{trade.marketTitle ?? shortWallet(trade.conditionId)}</div>
+                          <div className="text-xs text-muted-foreground">{shortWallet(trade.conditionId)}</div>
+                        </td>
+                        <td className="table-cell">{trade.side}</td>
+                        <td className={cn("table-cell font-semibold", pnl >= 0 ? "text-emerald-300" : "text-red-300")}>{money(pnl)}</td>
+                        <td className={cn("table-cell", trade.grossPnlUsd >= 0 ? "text-emerald-300" : "text-red-300")}>{money(trade.grossPnlUsd)}</td>
+                        <td className="table-cell">{money(trade.feesUsd)}</td>
+                        <td className="table-cell">{money(trade.slippageUsd)}</td>
+                        <td className="table-cell">{`${(trade.edge * 100).toFixed(2)}%`}</td>
+                        <td className="table-cell">{percent(trade.fillRate)}</td>
+                        <td className="table-cell text-muted-foreground">{timeAgo(trade.openedAt)}</td>
+                        <td className="table-cell text-muted-foreground">{trade.closedAt ? timeAgo(trade.closedAt) : trade.status}</td>
+                        <td className="table-cell max-w-[230px]">
+                          <div className="truncate text-xs text-muted-foreground">
+                            {trade.lossReason ?? trade.exitReason ?? trade.rejectionReason ?? "No loss reason recorded"}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </section>
   );
 }
 
@@ -810,7 +1294,7 @@ function PaperModeBanner({ mode }: { mode: "PAPER" | "LIVE" }) {
       )}
     >
       <div className="flex items-center gap-3">
-        {live ? <AlertTriangle className="h-5 w-5 text-red-300" /> : <ShieldAlert className="h-5 w-5 text-emerald-300" />}
+        {live ? <AlertTriangle className="h-5 w-5 text-red-300" /> : <CheckCircle2 className="h-5 w-5 text-emerald-300" />}
         <div>
           <div className="text-sm font-semibold">{live ? "LIVE TRADING ACTIVE" : "PAPER MODE - NO REAL MONEY"}</div>
           <div className="text-xs text-muted-foreground">
@@ -820,6 +1304,138 @@ function PaperModeBanner({ mode }: { mode: "PAPER" | "LIVE" }) {
       </div>
       <Badge variant={live ? "destructive" : "success"}>{live ? "LIVE" : "SAFE PAPER"}</Badge>
     </div>
+  );
+}
+
+function PnlStatusPanel({ state }: { state: DashboardState }) {
+  const summary = state.strategies?.losingDiagnostics;
+  const strategyNetPnl = summary?.netPnlUsd ?? 0;
+  const strategyWinRate = summary?.winRate ?? 0;
+  const portfolioPnl = state.portfolio.realizedPnlUsd + state.portfolio.unrealizedPnlUsd;
+  const avgDelayMs = summary?.averageDataDelayMs ?? 0;
+  const best = summary?.strategyRanking[0];
+  const isWinning = strategyNetPnl > 0;
+  const isLosing = strategyNetPnl < 0;
+  const tone = isWinning ? "border-emerald-500/35 bg-emerald-500/10" : isLosing ? "border-red-500/35 bg-red-500/10" : "border-amber-500/35 bg-amber-500/10";
+
+  return (
+    <Card className={cn("overflow-hidden border", tone)}>
+      <CardContent className="p-4">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={isWinning ? "success" : isLosing ? "destructive" : "warning"}>
+                {isWinning ? "PAPER STRATEGY WINNING" : isLosing ? "PAPER STRATEGY LOSING" : "PAPER STRATEGY FLAT"}
+              </Badge>
+              <Badge variant="outline">Real money: OFF</Badge>
+              <Badge variant={avgDelayMs <= state.safeConfig.maxDataAgeMs ? "success" : "warning"}>
+                Avg quote delay {avgDelayMs.toFixed(0)}ms
+              </Badge>
+            </div>
+            <div className={cn("mt-3 text-4xl font-semibold tracking-normal", isWinning ? "text-emerald-300" : isLosing ? "text-red-300" : "text-amber-300")}>
+              {money(strategyNetPnl)}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              Strategy lab net PnL. Copy/demo portfolio PnL is separate: {money(portfolioPnl)}.
+            </div>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[620px] xl:grid-cols-4">
+            <MiniDatum label="Best strategy" value={best ? strategyLabel(best.strategy) : "Collecting"} />
+            <MiniDatum label="Win rate" value={percent(strategyWinRate)} />
+            <MiniDatum label="Trades / signals" value={`${summary?.tradesTaken ?? 0}/${summary?.totalSignals ?? 0}`} />
+            <MiniDatum label="Rejected" value={String(summary?.rejectedSignals ?? 0)} />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function LearningPanel({ state }: { state: DashboardState }) {
+  const learning = state.strategies?.learning;
+  if (!learning) return null;
+
+  const disabled = learning.disabledStrategies.map(strategyLabel);
+  const adjustmentSummary = learning.appliedAdjustments.slice(0, 4);
+
+  return (
+    <Card className="border-cyan-500/25 bg-cyan-500/5">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Cpu className="h-4 w-4 text-cyan-300" />
+          <CardTitle>Paper Self-Learning</CardTitle>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Badge variant={learning.enabled ? "success" : "outline"}>{learning.enabled ? "Enabled" : "Off"}</Badge>
+          <Badge variant={learning.autoApply ? "warning" : "outline"}>
+            {learning.autoApply ? "Auto-tighten" : "Recommend only"}
+          </Badge>
+          <Badge variant="outline">Real money: OFF</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+          <MiniDatum label="Focus" value={learning.focusedStrategy ? strategyLabel(learning.focusedStrategy) : "Collecting"} />
+          <MiniDatum label="Samples" value={`${learning.sampleSignals} signals`} />
+          <MiniDatum label="Paper trades" value={String(learning.sampleTrades)} />
+          <MiniDatum label="Paused loops" value={disabled.length ? disabled.join(", ") : "None"} />
+          <MiniDatum label="Updated" value={learning.lastUpdatedAt ? timeAgo(learning.lastUpdatedAt) : "Waiting"} />
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          <div className="rounded-lg border border-border bg-background/55 p-3">
+            <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+              <SlidersHorizontal className="h-4 w-4 text-cyan-300" />
+              Current Recommendations
+            </div>
+            {learning.recommendations.length === 0 ? (
+              <EmptyState icon={Cpu} title="Collecting strategy samples" body="The optimizer waits for enough paper signals before changing anything." compact />
+            ) : (
+              <div className="space-y-2">
+                {learning.recommendations.slice(0, 5).map((item) => (
+                  <div key={item} className="rounded-md border border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+                    {item}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-border bg-background/55 p-3">
+            <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+              <ShieldAlert className="h-4 w-4 text-emerald-300" />
+              Auto-Applied Guardrails
+            </div>
+            {adjustmentSummary.length === 0 ? (
+              <EmptyState icon={ShieldAlert} title="No tuning applied" body="Paper settings will only tighten after enough diagnostics prove a problem." compact />
+            ) : (
+              <div className="space-y-2">
+                {adjustmentSummary.map((adjustment) => (
+                  <div key={`${adjustment.setting}-${adjustment.to}`} className="rounded-md border border-border bg-muted/35 px-3 py-2">
+                    <div className="text-xs font-semibold">{adjustment.setting}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {String(adjustment.from)}
+                      {" -> "}
+                      {String(adjustment.to)}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">{adjustment.reason}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {learning.notes.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {learning.notes.map((note) => (
+              <Badge key={note} variant="outline">{note}</Badge>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -958,7 +1574,7 @@ function ClosedPositionsTable({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Closed Positions</CardTitle>
+        <CardTitle>Copy / Demo Closed Positions</CardTitle>
         <select className="select-input" value={filters.tradeResult} onChange={(event) => setFilters((prev) => ({ ...prev, tradeResult: event.target.value }))}>
           <option value="all">All results</option>
           <option value="win">Wins</option>
@@ -967,7 +1583,7 @@ function ClosedPositionsTable({
       </CardHeader>
       <CardContent>
         {positions.length === 0 ? (
-          <EmptyState icon={History} title="No closed positions" body="Closed paper trades will appear here with result and duration." />
+          <EmptyState icon={History} title="No copy/demo closed positions" body="Strategy wins and losses now appear in the Win / Loss History panel above." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[860px] border-separate border-spacing-0">
@@ -1311,6 +1927,10 @@ function LatencyPanel({ state, logs }: { state: DashboardState; logs: LogEvent[]
           <MiniDatum label="WS latency" value={state.status.webSocketLatencyMs === undefined ? "Waiting" : `${state.status.webSocketLatencyMs}ms`} />
           <MiniDatum label="Subscribed assets" value={String(state.status.marketWebSocketSubscribedAssets)} />
           <MiniDatum label="Last WS msg" value={timeAgo(state.status.lastMarketWebSocketMessageAt)} />
+          <MiniDatum label="SSE refresh" value="0.5s" />
+          <MiniDatum label="Arb scan" value={`${state.safeConfig.arbitrageScanIntervalSeconds}s`} />
+          <MiniDatum label="MM scan" value={`${state.safeConfig.marketMakingIntervalSeconds}s`} />
+          <MiniDatum label="Position mark" value={`${state.safeConfig.positionMarkIntervalSeconds}s`} />
           <MiniDatum label="Demo interval" value={`${state.safeConfig.simulateSignalIntervalSeconds}s`} />
         </div>
         {recentErrors.length === 0 ? (
@@ -1324,6 +1944,75 @@ function LatencyPanel({ state, logs }: { state: DashboardState; logs: LogEvent[]
             ))}
           </div>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SettingsPanel({ state }: { state: DashboardState }) {
+  return (
+    <Card>
+      <CardHeader className="items-start">
+        <div>
+          <CardTitle>Settings</CardTitle>
+          <div className="mt-1 text-xs text-muted-foreground">
+            Runtime safety and paper-trading filters currently loaded from your local .env file.
+          </div>
+        </div>
+        <Badge variant={state.safeConfig.paperTradingOnly && !state.safeConfig.realTradingEnabled ? "success" : "destructive"}>
+          {state.safeConfig.paperTradingOnly && !state.safeConfig.realTradingEnabled ? "Safe paper config" : "Unsafe config"}
+        </Badge>
+      </CardHeader>
+      <CardContent className="grid gap-4 lg:grid-cols-4">
+        <div className="rounded-lg border border-border bg-background/55 p-4">
+          <div className="mb-3 text-sm font-semibold">Trading Mode</div>
+          <div className="grid gap-2">
+            <RiskLine label="Mode" value={state.mode} />
+            <RiskLine label="Paper only" value={String(state.safeConfig.paperTradingOnly)} danger={!state.safeConfig.paperTradingOnly} />
+            <RiskLine label="Real enabled" value={String(state.safeConfig.realTradingEnabled)} danger={state.safeConfig.realTradingEnabled} />
+            <RiskLine label="UI real confirmation" value={String(state.strategies?.realTradingUiConfirmed ?? false)} danger={Boolean(state.strategies?.realTradingUiConfirmed)} />
+            <RiskLine label="Random copy demo" value={state.safeConfig.simulateSignals ? "On" : "Off"} danger={state.safeConfig.simulateSignals} />
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-background/55 p-4">
+          <div className="mb-3 text-sm font-semibold">Execution Filters</div>
+          <div className="grid gap-2">
+            <RiskLine label="Min net edge" value={`${(state.safeConfig.minNetEdge * 100).toFixed(2)}%`} />
+            <RiskLine label="Max spread" value={`${(state.safeConfig.maxSpread * 100).toFixed(2)}%`} />
+            <RiskLine label="Max slippage" value={`${(state.safeConfig.maxSlippage * 100).toFixed(2)}%`} />
+            <RiskLine label="Max data age" value={`${state.safeConfig.maxDataAgeMs}ms`} />
+            <RiskLine label="Depth multiplier" value={`${state.safeConfig.minDepthMultiplier}x`} />
+            <RiskLine label="Reject partial fills" value={String(state.safeConfig.rejectPartialFills)} />
+            <RiskLine label="MM queue max" value={`${state.safeConfig.marketMakingMaxQueueDepthMultiplier}x`} />
+            <RiskLine label="MM adverse haircut" value={`${state.safeConfig.marketMakingAdverseSelectionBps} bps`} />
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-background/55 p-4">
+          <div className="mb-3 text-sm font-semibold">Risk Limits</div>
+          <div className="grid gap-2">
+            <RiskLine label="Max trade" value={money(state.safeConfig.maxTradeSizeUsd)} />
+            <RiskLine label="Max daily loss" value={percent(state.safeConfig.maxDailyLossPct)} />
+            <RiskLine label="Max deployed" value={percent(state.safeConfig.maxDeployedCapitalPct)} />
+            <RiskLine label="Max open positions" value={String(state.safeConfig.maxStrategyOpenPositions)} />
+            <RiskLine label="One-market exposure" value={money(state.safeConfig.maxOneMarketExposureUsd)} />
+            <RiskLine label="Stop after losses" value={String(state.safeConfig.stopAfterConsecutiveLosses)} />
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-background/55 p-4">
+          <div className="mb-3 text-sm font-semibold">Low-Latency Timing</div>
+          <div className="grid gap-2">
+            <RiskLine label="SSE dashboard refresh" value="0.5s" />
+            <RiskLine label="Arbitrage scan" value={`${state.safeConfig.arbitrageScanIntervalSeconds}s`} />
+            <RiskLine label="Market making scan" value={`${state.safeConfig.marketMakingIntervalSeconds}s`} />
+            <RiskLine label="Wallet poll" value={`${state.safeConfig.traderPollIntervalSeconds}s`} />
+            <RiskLine label="Position mark" value={`${state.safeConfig.positionMarkIntervalSeconds}s`} />
+            <RiskLine label="Whale poll" value={`${state.safeConfig.whalePollIntervalSeconds}s`} />
+            <RiskLine label="Market WebSocket" value={state.safeConfig.enableMarketWebSocket ? "Enabled" : "Disabled"} danger={!state.safeConfig.enableMarketWebSocket} />
+          </div>
+        </div>
       </CardContent>
     </Card>
   );
@@ -1398,6 +2087,14 @@ function SideBadge({ side }: { side: "BUY" | "SELL" }) {
   return <Badge variant={side === "BUY" ? "success" : "warning"}>{side}</Badge>;
 }
 
+function TradeResultBadge({ trade }: { trade: StrategyPaperTrade }) {
+  const pnl = strategyTradePnl(trade);
+  if (!trade.closedAt && trade.status !== "filled") return <Badge variant="outline">Open</Badge>;
+  if (pnl > 0) return <Badge variant="success">Win</Badge>;
+  if (pnl < 0) return <Badge variant="destructive">Loss</Badge>;
+  return <Badge variant="warning">Flat</Badge>;
+}
+
 function StrategyStatusBadge({ status }: { status: string }) {
   const variant =
     status === "filled" || status === "accepted" || status === "alert"
@@ -1408,6 +2105,10 @@ function StrategyStatusBadge({ status }: { status: string }) {
           ? "destructive"
           : "outline";
   return <Badge variant={variant}>{status}</Badge>;
+}
+
+function strategyTradePnl(trade: StrategyPaperTrade): number {
+  return trade.realizedPnlUsd + trade.unrealizedPnlUsd;
 }
 
 function MetricTile({ label, value, positive = true }: { label: string; value: string; positive?: boolean }) {

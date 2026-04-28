@@ -1,7 +1,7 @@
 import { logger } from "../logger";
 import { DataClient } from "../polymarket/dataClient";
 import { ClobPublicClient } from "../polymarket/clobPublicClient";
-import { StrategyPaperTrader } from "../trading/strategyPaperTrader";
+import { StrategyExecutionPort } from "../execution/executionLayer";
 import { BotConfig, DataApiTrade, PortfolioSnapshot, StrategyOpportunity } from "../types";
 import { bestAsk, bestBid, effectiveTakerFeeRate, orderBookAgeMs, simulateOrderBookFill, spread } from "./orderBookMath";
 import { StrategyStateStore } from "./strategyState";
@@ -13,7 +13,7 @@ export class WhaleTracker {
     private readonly dataClient: DataClient,
     private readonly clobClient: ClobPublicClient,
     private readonly store: StrategyStateStore,
-    private readonly paperTrader: StrategyPaperTrader,
+    private readonly execution: StrategyExecutionPort,
     private readonly config: Pick<
       BotConfig,
       "whaleMinTradeUsd" | "takerFeeRate" | "cryptoTakerFeeRate" | "arbitrageTargetShares" | "maxDataAgeMs" | "rejectPartialFills"
@@ -109,7 +109,7 @@ export class WhaleTracker {
           });
           continue;
         }
-        this.paperTrader.executeSingleLeg("whale-tracker", { ...opportunity, status: "filled" }, fill, opportunity.edge * fill.filledShares);
+        this.execution.executeSingleLeg("whale-tracker", { ...opportunity, status: "filled" }, fill, opportunity.edge * fill.filledShares);
       }
     }
   }

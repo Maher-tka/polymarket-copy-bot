@@ -1,5 +1,22 @@
-import { BotConfig, CopySignal, PortfolioSnapshot, RiskDecision } from "../types";
+import { BotConfig, BotMode, CopySignal, PortfolioSnapshot, RiskDecision } from "../types";
 import { logger } from "../logger";
+
+export interface LiveOrderIntent {
+  strategy: string;
+  marketId: string;
+  estimatedNotionalUsd: number;
+  marketLiquidityUsd: number;
+  approvedForLive: boolean;
+}
+
+export interface LiveRiskContext {
+  mode: BotMode;
+  openPositions: number;
+  dailyPnlUsd: number;
+  hourlyPnlUsd: number;
+  apiErrorCount: number;
+  abnormalFillBehavior: boolean;
+}
 
 export class RiskManager {
   private killSwitchActive = false;
@@ -9,7 +26,19 @@ export class RiskManager {
   constructor(
     private readonly config: Pick<
       BotConfig,
-      "maxTradeUsd" | "maxMarketExposureUsd" | "maxDailyLossUsd" | "maxOpenPositions" | "stopAfterErrors"
+      | "mode"
+      | "enableLiveTrading"
+      | "realTradingEnabled"
+      | "liveTrading"
+      | "paperTrading"
+      | "maxTradeUsd"
+      | "maxTradeSizeUsdc"
+      | "maxMarketExposureUsd"
+      | "maxDailyLossUsd"
+      | "maxDailyLossUsdc"
+      | "maxOpenPositions"
+      | "stopAfterErrors"
+      | "minDepthMultiplier"
     >
   ) {}
 
@@ -57,6 +86,41 @@ export class RiskManager {
       accepted: reasons.length === 0,
       reasons
     };
+  }
+
+  evaluateLiveOrder(intent: LiveOrderIntent, context: LiveRiskContext): RiskDecision {
+    const reasons: string[] = [];
+
+    if (!this.config.enableLiveTrading) reasons.push("ENABLE_LIVE_TRADING is false.");
+    if (!this.config.realTradingEnabled) reasons.push("REAL_TRADING_ENABLED is false.");
+    if (!this.config.liveTrading || this.config.paperTrading) reasons.push("Live mode requires LIVE_TRADING=true and PAPER_TRADING=false.");
+    if (this.config.mode !== "live" || context.mode !== "live") reasons.push("MODE must be live for real orders.");
+    if (this.killSwitchActive) reasons.push("Kill switch is active.");
+    if (this.paused) reasons.push("Bot is paused.");
+    if (!intent.approvedForLive) reasons.push("Strategy is not approved for live trading.");
+    if (intent.estimatedNotionalUsd > this.config.maxTradeSizeUsdc) reasons.push("Order exceeds MAX_TRADE_SIZE_USDC.");
+    if (context.dailyPnlUsd <= -Math.abs(this.config.maxDailyLossUsdc)) reasons.push("MAX_DAILY_LOSS_USDC has been reached.");
+    if (context.openPositions >= this.config.maxOpenPositions) reasons.push("MAX_OPEN_POSITIONS reached.");
+    if (intent.marketLiquidityUsd < intent.estimatedNotionalUsd * this.config.minDepthMultiplier) {
+      reasons.push("Market liquidity is too low for the intended live order.");
+    }
+    if (context.apiErrorCount >= this.config.stopAfterErrors) reasons.push("API error count reached STOP_AFTER_ERRORS.");
+    if (context.abnormalFillBehavior) reasons.push("Order placement/fill behavior is abnormal.");
+
+    const decision = {
+      accepted: reasons.length === 0,
+      reasons
+    };
+
+    logger.info("Live order risk decision evaluated.", {
+      accepted: decision.accepted,
+      strategy: intent.strategy,
+      marketId: intent.marketId,
+      estimatedNotionalUsd: intent.estimatedNotionalUsd,
+      reasons
+    });
+
+    return decision;
   }
 
   recordError(error: unknown): void {

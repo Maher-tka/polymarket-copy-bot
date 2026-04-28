@@ -26,6 +26,10 @@ export class LocalDatabase {
     this.append("paperTrade", trade);
   }
 
+  recordPaperTradeUpdate(trade: StrategyPaperTrade): void {
+    this.append("paperTrade", trade);
+  }
+
   recordRejection(rejection: StrategyRejection): void {
     this.append("rejection", rejection);
   }
@@ -51,6 +55,31 @@ export class LocalDatabase {
       });
   }
 
+  readLatestRecords<T extends { id?: string }>(kind: RecordKind): T[] {
+    const newestFirst = this.readRecords<T>(kind).reverse();
+    const byId = new Map<string, T>();
+    const results: T[] = [];
+
+    for (const record of newestFirst) {
+      const key = record.id;
+      if (key && byId.has(key)) continue;
+      if (key) byId.set(key, record);
+      results.push(record);
+    }
+
+    return results;
+  }
+
+  readRecentRecords<T extends { id?: string }>(kind: RecordKind, limit: number): T[] {
+    return this.readLatestRecords<T>(kind).slice(0, limit);
+  }
+
+  countRecords(kind: RecordKind): number {
+    const file = this.filePath(kind);
+    if (!fs.existsSync(file)) return 0;
+    return fs.readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean).length;
+  }
+
   recordOrderBookSnapshot(snapshot: unknown): void {
     this.snapshotsRecorded += 1;
     this.lastSnapshotAt = new Date().toISOString();
@@ -59,7 +88,7 @@ export class LocalDatabase {
 
   getRecorderStatus(): { snapshotsRecorded: number; lastSnapshotAt?: string; path: string } {
     return {
-      snapshotsRecorded: this.snapshotsRecorded,
+      snapshotsRecorded: Math.max(this.snapshotsRecorded, this.countRecords("orderBookSnapshot")),
       lastSnapshotAt: this.lastSnapshotAt,
       path: this.filePath("orderBookSnapshot")
     };

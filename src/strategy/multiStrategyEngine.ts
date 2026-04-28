@@ -2,6 +2,8 @@ import { logger } from "../logger";
 import { ClobPublicClient } from "../polymarket/clobPublicClient";
 import { DataClient } from "../polymarket/dataClient";
 import { GammaClient } from "../polymarket/gammaClient";
+import { PaperExecutionLayer, StrategyExecutionPort } from "../execution/executionLayer";
+import { PaperLearningOptimizer } from "../learning/paperLearningOptimizer";
 import { StrategyRiskManager } from "../risk/strategyRiskManager";
 import { LocalDatabase } from "../storage/localDatabase";
 import { StrategyPaperTrader } from "../trading/strategyPaperTrader";
@@ -17,7 +19,8 @@ import { WhaleTracker } from "./whaleTracker";
 export class MultiStrategyEngine {
   private readonly database = new LocalDatabase();
   private readonly store: StrategyStateStore;
-  private readonly paperTrader: StrategyPaperTrader;
+  private readonly execution: StrategyExecutionPort;
+  private readonly learning: PaperLearningOptimizer;
   private readonly netArb: NetArbitrageScanner;
   private readonly makerArb: MakerArbitrageMode;
   private readonly marketMaking: MarketMakingMode;
@@ -41,17 +44,18 @@ export class MultiStrategyEngine {
       recorderEnabled: deps.config.recorderEnabled,
       backtestMode: deps.config.backtestMode
     });
-    this.paperTrader = new StrategyPaperTrader(this.store);
+    this.execution = new PaperExecutionLayer({ strategyTrader: new StrategyPaperTrader(this.store) });
+    this.learning = new PaperLearningOptimizer(deps.config);
     this.netArb = new NetArbitrageScanner(
       deps.clobClient,
       this.store,
-      this.paperTrader,
+      this.execution,
       deps.strategyRisk,
       deps.config
     );
-    this.makerArb = new MakerArbitrageMode(deps.clobClient, this.store, this.paperTrader, deps.config);
-    this.marketMaking = new MarketMakingMode(deps.clobClient, this.store, this.paperTrader, deps.config);
-    this.whaleTracker = new WhaleTracker(deps.dataClient, deps.clobClient, this.store, this.paperTrader, deps.config);
+    this.makerArb = new MakerArbitrageMode(deps.clobClient, this.store, this.execution, deps.config);
+    this.marketMaking = new MarketMakingMode(deps.clobClient, this.store, this.execution, deps.config);
+    this.whaleTracker = new WhaleTracker(deps.dataClient, deps.clobClient, this.store, this.execution, deps.config);
   }
 
   async start(): Promise<void> {
@@ -67,8 +71,9 @@ export class MultiStrategyEngine {
     this.timers.push(setInterval(() => this.runMakerTick().catch((error) => this.logError(error)), this.deps.config.arbitrageScanIntervalSeconds * 1000));
     this.timers.push(setInterval(() => this.runMarketMakingTick().catch((error) => this.logError(error)), this.deps.config.marketMakingIntervalSeconds * 1000));
     this.timers.push(setInterval(() => this.runWhaleTick().catch((error) => this.logError(error)), this.deps.config.whalePollIntervalSeconds * 1000));
-    this.timers.push(setInterval(() => this.paperTrader.settleAgedTrades(this.deps.config.paperAutoSettleSeconds), 5_000));
+    this.timers.push(setInterval(() => this.execution.settleAgedStrategyTrades(this.deps.config.paperAutoSettleSeconds), 5_000));
     this.timers.push(setInterval(() => this.runForcedCloseRiskCheck().catch((error) => this.logError(error)), 5_000));
+    this.timers.push(setInterval(() => this.refreshLearning(), 5_000));
   }
 
   stop(): void {
@@ -77,7 +82,8 @@ export class MultiStrategyEngine {
   }
 
   getState(): StrategyEngineState {
-    return this.store.getState();
+    const state = this.store.getState();
+    return { ...state, learning: this.learning.getState() };
   }
 
   exportCsv(): string {
@@ -100,23 +106,44 @@ export class MultiStrategyEngine {
   }
 
   private async runScannerTick(): Promise<void> {
+    this.refreshLearning();
+    if (!this.learning.shouldRun("net-arbitrage")) return;
     const candidates = await this.loadMarketCandidates();
     await this.netArb.scan(candidates, this.deps.portfolio.getSnapshot());
     await this.recordSnapshots(candidates.slice(0, 4));
   }
 
   private async runMakerTick(): Promise<void> {
+    this.refreshLearning();
+    if (!this.learning.shouldRun("maker-arbitrage")) return;
     const candidates = await this.loadMarketCandidates();
     await this.makerArb.tick(candidates, this.deps.portfolio.getSnapshot());
   }
 
   private async runMarketMakingTick(): Promise<void> {
+    this.refreshLearning();
+    if (!this.learning.shouldRun("market-making")) return;
     const candidates = await this.loadMarketCandidates();
     await this.marketMaking.tick(candidates, this.deps.portfolio.getSnapshot());
   }
 
   private async runWhaleTick(): Promise<void> {
+    this.refreshLearning();
+    if (!this.learning.shouldRun("whale-tracker")) return;
     await this.whaleTracker.poll(this.deps.portfolio.getSnapshot());
+  }
+
+  private refreshLearning(): void {
+    const before = this.learning.getState();
+    const next = this.learning.evaluate(this.store.getState());
+    const previousAdjustments = new Set(before.appliedAdjustments.map((adjustment) => JSON.stringify(adjustment)));
+    for (const adjustment of next.appliedAdjustments.filter((item) => !previousAdjustments.has(JSON.stringify(item)))) {
+      logger.info("Paper learning applied tuning.", adjustment);
+    }
+    const newlyDisabled = next.disabledStrategies.filter((strategy) => !before.disabledStrategies.includes(strategy));
+    if (newlyDisabled.length > 0) {
+      logger.warn("Paper learning paused losing strategy execution.", { strategies: newlyDisabled });
+    }
   }
 
   private async loadMarketCandidates(): Promise<BinaryMarketCandidate[]> {

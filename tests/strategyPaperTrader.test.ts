@@ -51,6 +51,32 @@ describe("StrategyPaperTrader", () => {
     expect(trade.actualEdge).toBeGreaterThan(0);
   });
 
+  it("hydrates paper trade history and closed updates from local storage", () => {
+    const database = new LocalDatabase(mkdtempSync(join(tmpdir(), "poly-test-")));
+    const firstStore = new StrategyStateStore(database, {
+      realTradingEnabled: false,
+      recorderEnabled: false,
+      backtestMode: false
+    });
+    const trader = new StrategyPaperTrader(firstStore);
+
+    const trade = trader.executePairedArbitrage(opportunity, fill(0.48, 10, 0.01), fill(0.49, 10, 0.01));
+    const expectedPnl = trade.unrealizedPnlUsd;
+    trader.settleAgedTrades(0);
+
+    const secondStore = new StrategyStateStore(database, {
+      realTradingEnabled: false,
+      recorderEnabled: false,
+      backtestMode: false
+    });
+    const hydrated = secondStore.getState().paperTrades.find((item) => item.id === trade.id);
+
+    expect(hydrated).toBeDefined();
+    expect(hydrated?.closedAt).toBeDefined();
+    expect(hydrated?.realizedPnlUsd).toBeCloseTo(expectedPnl);
+    expect(hydrated?.unrealizedPnlUsd).toBe(0);
+  });
+
   it("summarizes fees, slippage, win rate, and best strategy", () => {
     const summary = buildLosingDiagnostics({
       diagnostics: [],

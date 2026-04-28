@@ -1,6 +1,7 @@
 export type TradeSide = "BUY" | "SELL";
 export type TradingMode = "PAPER" | "LIVE";
 export type LogLevel = "debug" | "info" | "warn" | "error";
+export type BotMode = "research" | "backtest" | "paper" | "live";
 export type StrategyName =
   | "maker-arbitrage"
   | "net-arbitrage"
@@ -19,15 +20,19 @@ export type LossCause =
   | "negative-edge";
 
 export interface BotConfig {
+  mode: BotMode;
   paperTradingOnly: boolean;
   paperTrading: boolean;
   liveTrading: boolean;
+  enableLiveTrading: boolean;
   manualApproval: boolean;
   startingPaperBalance: number;
   maxTradeUsd: number;
   maxTradeSizeUsd: number;
+  maxTradeSizeUsdc: number;
   maxMarketExposureUsd: number;
   maxDailyLossUsd: number;
+  maxDailyLossUsdc: number;
   maxOpenPositions: number;
   minTraderScore: number;
   minMarketVolumeUsd: number;
@@ -37,6 +42,12 @@ export interface BotConfig {
   maxCopyPriceDifference: number;
   copyDelayLimitSeconds: number;
   stopAfterErrors: number;
+  killSwitchDrawdownPercent: number;
+  orderStaleSeconds: number;
+  defaultLatencyMs: number;
+  autoRedeemEnabled: boolean;
+  autoRedeemDryRun: boolean;
+  autoRedeemIntervalSeconds: number;
   clobHost: string;
   dataApi: string;
   gammaApi: string;
@@ -77,7 +88,13 @@ export interface BotConfig {
   marketMakingIntervalSeconds: number;
   marketMakingMinEdge: number;
   marketMakingMaxDataAgeMs: number;
+  marketMakingMaxQueueDepthMultiplier: number;
+  marketMakingAdverseSelectionBps: number;
   strategyLabAllMarkets: boolean;
+  paperLearningEnabled: boolean;
+  paperLearningAutoApply: boolean;
+  paperLearningMinSignals: number;
+  paperLearningMinTrades: number;
   whalePollIntervalSeconds: number;
   whaleMinTradeUsd: number;
   takerFeeRate: number;
@@ -93,6 +110,9 @@ export interface BotConfig {
   polymarketApiKey?: string;
   polymarketApiSecret?: string;
   polymarketApiPassphrase?: string;
+  polymarketSecret?: string;
+  polymarketFunder?: string;
+  marketlensApiKey?: string;
 }
 
 export interface LeaderboardTrader {
@@ -590,6 +610,26 @@ export interface LosingDiagnosticsSummary {
   }>;
 }
 
+export interface PaperLearningAdjustment {
+  setting: string;
+  from: number | string | boolean;
+  to: number | string | boolean;
+  reason: string;
+}
+
+export interface PaperLearningState {
+  enabled: boolean;
+  autoApply: boolean;
+  focusedStrategy?: StrategyName;
+  disabledStrategies: StrategyName[];
+  lastUpdatedAt?: string;
+  sampleSignals: number;
+  sampleTrades: number;
+  recommendations: string[];
+  appliedAdjustments: PaperLearningAdjustment[];
+  notes: string[];
+}
+
 export interface StrategyEngineState {
   activeMode: "Scanner" | "Paper" | "Real";
   realTradingEnabled: boolean;
@@ -603,6 +643,7 @@ export interface StrategyEngineState {
   losingDiagnostics: LosingDiagnosticsSummary;
   makerOrders: SimulatedMakerOrder[];
   metrics: StrategyMetrics[];
+  learning?: PaperLearningState;
   recorder: {
     enabled: boolean;
     snapshotsRecorded: number;
