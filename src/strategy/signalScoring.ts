@@ -97,19 +97,16 @@ export function scoreSignal(input: SignalScoreInput, config: SignalScoringConfig
     negative.push("market volume below threshold");
   }
 
+  const boundedScore = Math.round(clamp(score, 0, 100));
   const reasons: string[] = [];
-  if (score < config.minSignalScore) reasons.push(`Signal score ${Math.round(score)} is below MIN_SIGNAL_SCORE ${config.minSignalScore}.`);
+  if (boundedScore < config.minSignalScore) reasons.push(`Signal score ${boundedScore} is below MIN_SIGNAL_SCORE ${config.minSignalScore}.`);
   if (input.highRisk && confirmations.length < config.highRiskConfirmationCount) {
     reasons.push(`High-risk trade needs at least ${config.highRiskConfirmationCount} confirmations.`);
-  }
-  if (input.realEdge <= config.minRealEdge) reasons.push("Real edge is not positive enough after costs and latency.");
-  if (input.signal && input.signal.traderNotionalUsd < config.minCopyTradeUsd) {
-    reasons.push("Source trade is below MIN_COPY_TRADE_USD.");
   }
 
   return {
     accepted: reasons.length === 0,
-    score: Math.round(clamp(score, 0, 100)),
+    score: boundedScore,
     confirmations,
     reasons,
     positive,

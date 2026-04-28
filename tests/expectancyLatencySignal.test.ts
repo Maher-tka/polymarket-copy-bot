@@ -76,6 +76,32 @@ describe("latency and signal quality gates", () => {
     expect(result.confirmations.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("uses the score threshold without duplicating existing copy filter reasons", () => {
+    const result = scoreSignal(
+      {
+        signal: { ...copySignal(), traderScore: 20, traderNotionalUsd: 1 },
+        snapshot: snapshot({ availableLiquidityUsd: 0, spread: 0.05, volumeUsd: 1_000 }),
+        realEdge: -0.01,
+        expectedProfitUsd: -0.1,
+        latency: {
+          dataAgeMs: 3_000,
+          signalDetectionLatencyMs: 1_000,
+          decisionLatencyMs: 500,
+          simulatedExecutionLatencyMs: 100,
+          totalLatencyMs: 1_600
+        },
+        confirmations: [],
+        highRisk: false
+      },
+      config()
+    );
+
+    expect(result.accepted).toBe(false);
+    expect(result.reasons).toEqual(["Signal score 0 is below MIN_SIGNAL_SCORE 70."]);
+    expect(result.negative).toContain("weak trader score");
+    expect(result.negative).toContain("tiny or negative expected profit");
+  });
+
   it("skips dumb copy trades when price already moved and data is stale", () => {
     const reasons = shouldSkipSmartCopy({
       signal: copySignal(),
