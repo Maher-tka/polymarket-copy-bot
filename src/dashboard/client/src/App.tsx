@@ -337,6 +337,7 @@ export function App() {
             <section id="dashboard" className="scroll-mt-24 space-y-4">
               <PaperModeBanner mode={state.mode} />
               <TradingCommandCenter state={state} sseConnected={sseConnected} />
+              <QuoteDaemonPanel state={state} />
               <PnlStatusPanel state={state} />
               <LearningPanel state={state} />
               <StrategyPulsePanel state={state} />
@@ -1768,6 +1769,29 @@ function WatchedTradersTable({ traders }: { traders: TraderScore[] }) {
   );
 }
 
+function QuoteDaemonPanel({ state }: { state: DashboardState }) {
+  const daemon = state.quoteDaemon;
+  const connected = Boolean(daemon?.connected);
+  const staleCount = daemon?.staleQuoteCount ?? 0;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Quote Daemon</CardTitle>
+        <Badge variant={!daemon?.enabled ? "outline" : connected ? "success" : "warning"}>
+          {!daemon?.enabled ? "Disabled" : connected ? "WebSocket live" : "Recovering"}
+        </Badge>
+      </CardHeader>
+      <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <MiniDatum label="Local API" value={daemon ? `${daemon.apiHost}:${daemon.apiPort}` : `127.0.0.1:${state.safeConfig.quoteDaemonPort}`} />
+        <MiniDatum label="Subscribed" value={String(daemon?.subscribedAssets ?? 0)} />
+        <MiniDatum label="Last message" value={daemon?.lastMessageAgeMs === undefined ? "Waiting" : formatMsAge(daemon.lastMessageAgeMs)} />
+        <MiniDatum label="Avg delay" value={`${(daemon?.averageQuoteDelayMs ?? 0).toFixed(0)}ms`} />
+        <MiniDatum label="Stale quotes" value={`${staleCount}/${daemon?.quoteCount ?? 0}`} />
+      </CardContent>
+    </Card>
+  );
+}
+
 function RiskPanel({
   state,
   exposureUsd,
@@ -2265,6 +2289,15 @@ function MiniDatum({ label, value }: { label: string; value: string }) {
       <div className="mt-1 truncate text-sm font-semibold">{value}</div>
     </div>
   );
+}
+
+function formatMsAge(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
 }
 
 function RiskLine({ label, value, danger }: { label: string; value: string; danger?: boolean }) {

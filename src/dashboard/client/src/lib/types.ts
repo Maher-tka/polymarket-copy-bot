@@ -154,6 +154,20 @@ export interface RiskStatus {
   stopAfterErrors: number;
 }
 
+export interface QuoteDaemonHealth {
+  enabled: boolean;
+  connected: boolean;
+  subscribedAssets: number;
+  quoteCount: number;
+  lastMessageAt?: string;
+  lastMessageAgeMs?: number;
+  averageQuoteDelayMs: number;
+  staleQuoteCount: number;
+  reconnects: number;
+  apiHost: string;
+  apiPort: number;
+}
+
 export type StrategyName =
   | "maker-arbitrage"
   | "net-arbitrage"
@@ -468,6 +482,7 @@ export interface DashboardState {
   portfolio: PortfolioSnapshot;
   watchedTraders: TraderScore[];
   risk: RiskStatus;
+  quoteDaemon?: QuoteDaemonHealth;
   strategies?: StrategyEngineState;
   logs: LogEvent[];
   safeConfig: {
@@ -533,6 +548,10 @@ export interface DashboardState {
     paperLearningMinSignals: number;
     paperLearningMinTrades: number;
     dashboardHost: string;
+    quoteDaemonEnabled: boolean;
+    quoteDaemonPort: number;
+    maxQuoteDelayMs: number;
+    quoteFreshnessMs: number;
     maxTotalLatencyMs: number;
     latencyPenaltyBpsPerSecond: number;
     minRealEdge: number;

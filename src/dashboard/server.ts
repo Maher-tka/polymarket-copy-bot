@@ -7,6 +7,7 @@ import { MemoryLogger } from "../logger";
 import { RiskManager } from "../risk/riskManager";
 import { Portfolio } from "../trading/portfolio";
 import { MultiStrategyEngine } from "../strategy/multiStrategyEngine";
+import { QuoteDaemon } from "../marketData/quoteDaemon";
 
 export interface DashboardDeps {
   config: BotConfig;
@@ -15,9 +16,10 @@ export interface DashboardDeps {
   logger: MemoryLogger;
   botStatus: BotStatus;
   strategyEngine?: MultiStrategyEngine;
+  quoteDaemon?: QuoteDaemon;
 }
 
-export function createDashboardServer({ config, portfolio, riskManager, logger, botStatus, strategyEngine }: DashboardDeps) {
+export function createDashboardServer({ config, portfolio, riskManager, logger, botStatus, strategyEngine, quoteDaemon }: DashboardDeps) {
   const app = express();
   app.use(express.json());
 
@@ -35,6 +37,7 @@ export function createDashboardServer({ config, portfolio, riskManager, logger, 
       portfolio: snapshot,
       watchedTraders: portfolio.getWatchedTraders(),
       risk: riskManager.getStatus(),
+      quoteDaemon: quoteDaemon?.getHealth(),
       strategies: strategyEngine?.getState(),
       logs: logger.getLogs(),
       safeConfig: {
@@ -100,6 +103,10 @@ export function createDashboardServer({ config, portfolio, riskManager, logger, 
         paperLearningMinSignals: config.paperLearningMinSignals,
         paperLearningMinTrades: config.paperLearningMinTrades,
         dashboardHost: config.dashboardHost,
+        quoteDaemonEnabled: config.quoteDaemonEnabled,
+        quoteDaemonPort: config.quoteDaemonPort,
+        maxQuoteDelayMs: config.maxQuoteDelayMs,
+        quoteFreshnessMs: config.quoteFreshnessMs,
         maxTotalLatencyMs: config.maxTotalLatencyMs,
         latencyPenaltyBpsPerSecond: config.latencyPenaltyBpsPerSecond,
         minRealEdge: config.minRealEdge,

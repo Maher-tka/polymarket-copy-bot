@@ -64,6 +64,10 @@ export interface BotConfig {
   dataApi: string;
   gammaApi: string;
   dashboardPort: number;
+  quoteDaemonEnabled: boolean;
+  quoteDaemonPort: number;
+  maxQuoteDelayMs: number;
+  quoteFreshnessMs: number;
   watchedWallets: string[];
   maxWatchedTraders: number;
   leaderboardLimit: number;
@@ -257,6 +261,32 @@ export interface OrderBook {
   tick_size: string;
   neg_risk: boolean;
   last_trade_price?: string;
+}
+
+export interface QuoteCacheEntry {
+  assetId: string;
+  bestBid?: number;
+  bestAsk?: number;
+  spread?: number;
+  lastTradePrice?: number;
+  eventTimestamp?: string;
+  receivedAt: string;
+  quoteDelayMs: number;
+  isFresh: boolean;
+}
+
+export interface QuoteDaemonHealth {
+  enabled: boolean;
+  connected: boolean;
+  subscribedAssets: number;
+  quoteCount: number;
+  lastMessageAt?: string;
+  lastMessageAgeMs?: number;
+  averageQuoteDelayMs: number;
+  staleQuoteCount: number;
+  reconnects: number;
+  apiHost: string;
+  apiPort: number;
 }
 
 export interface MarketSnapshot {

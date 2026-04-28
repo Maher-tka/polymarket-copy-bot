@@ -17,6 +17,7 @@ import { StrategyStateStore } from "./strategyState";
 import { WhaleTracker } from "./whaleTracker";
 import { MarketEventQueue, scoreEvent } from "./eventQueue";
 import { OrderBookCache } from "./orderBookCache";
+import { QuoteDaemon } from "../marketData/quoteDaemon";
 
 export class MultiStrategyEngine {
   private readonly database = new LocalDatabase();
@@ -41,6 +42,7 @@ export class MultiStrategyEngine {
       clobClient: ClobPublicClient;
       portfolio: Portfolio;
       strategyRisk: StrategyRiskManager;
+      quoteDaemon?: QuoteDaemon;
     }
   ) {
     this.store = new StrategyStateStore(this.database, {
@@ -52,7 +54,9 @@ export class MultiStrategyEngine {
     this.learning = new PaperLearningOptimizer(deps.config);
     this.orderBookCache = new OrderBookCache(deps.clobClient, {
       maxDataAgeMs: deps.config.maxDataAgeMs,
-      eventQueue: this.eventQueue
+      maxQuoteDelayMs: deps.config.maxQuoteDelayMs,
+      eventQueue: this.eventQueue,
+      quoteDaemon: deps.quoteDaemon
     });
     const cachedClob = {
       getOrderBook: async (tokenId: string) => (await this.orderBookCache.getFreshOrderBook(tokenId)).book
@@ -208,6 +212,7 @@ export class MultiStrategyEngine {
     }
 
     this.marketCache = [...byCondition.values()].sort((a, b) => b.volumeUsd - a.volumeUsd);
+    this.deps.quoteDaemon?.subscribe(this.marketCache.flatMap((candidate) => [candidate.yesTokenId, candidate.noTokenId]));
     for (const candidate of this.marketCache.slice(0, 20)) {
       this.eventQueue.enqueue({
         type: "freshness-restored",

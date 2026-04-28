@@ -23,6 +23,7 @@ import { evaluateLatency } from "./latency/latencyEngine";
 import { scoreSignal, shouldSkipSmartCopy } from "./strategy/signalScoring";
 import { SignalThrottle } from "./risk/signalThrottle";
 import { classifyMarketCategory } from "./risk/exposure";
+import { QuoteDaemon } from "./marketData/quoteDaemon";
 
 async function main(): Promise<void> {
   if (config.mode !== "paper") {
@@ -49,6 +50,13 @@ async function main(): Promise<void> {
   const paperTrader = new PaperTrader(portfolio);
   const execution = new PaperExecutionLayer({ copyTrader: paperTrader });
   const signalThrottle = new SignalThrottle(config);
+  const quoteDaemon = new QuoteDaemon({
+    enabled: config.quoteDaemonEnabled,
+    apiPort: config.quoteDaemonPort,
+    maxQuoteDelayMs: config.maxQuoteDelayMs,
+    quoteFreshnessMs: config.quoteFreshnessMs
+  });
+  await quoteDaemon.start();
   const telegram = new TelegramNotifier(config);
   const marketWebSocket = config.enableMarketWebSocket ? new MarketWebSocket() : undefined;
   botStatus.setApiConnected(true);
@@ -73,11 +81,12 @@ async function main(): Promise<void> {
     dataClient,
     clobClient: clobPublicClient,
     portfolio,
-    strategyRisk: strategyRiskManager
+    strategyRisk: strategyRiskManager,
+    quoteDaemon
   });
   marketWebSocket?.on("message", (message) => strategyEngine.observeMarketWebSocketMessage(message));
 
-  const dashboard = createDashboardServer({ config, portfolio, riskManager, logger, botStatus, strategyEngine });
+  const dashboard = createDashboardServer({ config, portfolio, riskManager, logger, botStatus, strategyEngine, quoteDaemon });
   await dashboard.start();
   logger.info(`Dashboard running at http://${config.dashboardHost}:${config.dashboardPort}`);
   logger.info("Version 1 started in PAPER mode only. No real orders can be placed.");
@@ -112,6 +121,7 @@ async function main(): Promise<void> {
       portfolio,
       telegram,
       signalThrottle,
+      quoteDaemon,
       marketWebSocket
     })
   );
@@ -146,6 +156,7 @@ async function main(): Promise<void> {
         portfolio,
         telegram,
         signalThrottle,
+        quoteDaemon,
         marketWebSocket
       })
     );
@@ -167,6 +178,7 @@ interface ProcessSignalDeps {
   portfolio: Portfolio;
   telegram: TelegramNotifier;
   signalThrottle: SignalThrottle;
+  quoteDaemon: QuoteDaemon;
   marketWebSocket?: MarketWebSocket;
 }
 
@@ -182,10 +194,12 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
     portfolio,
     telegram,
     signalThrottle,
+    quoteDaemon,
     marketWebSocket
   } = deps;
 
   const signalDetectedAtMs = Date.now();
+  quoteDaemon.subscribe([signal.assetId]);
   portfolio.addSignal(signal);
   logger.info("New copy signal created.", {
     trader: signal.traderWallet,
@@ -236,6 +250,7 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
 
     const filterDecision = marketFilter.evaluate(signal, snapshot);
     const smartCopyReasons = shouldSkipSmartCopy({ signal, snapshot, latency: latencyDecision.metrics, config });
+    const quoteReasons = evaluateQuoteDelay(signal.assetId, quoteDaemon);
     const entryPrice = filterDecision.currentEntryPrice ?? signal.traderPrice;
     const rawEdge = signal.side === "BUY" ? Math.max(0, signal.traderPrice - entryPrice) : Math.max(0, entryPrice - signal.traderPrice);
     const realEdge = rawEdge - latencyDecision.penaltyEdge;
@@ -261,6 +276,7 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
       ...latencyDecision.reasons,
       ...filterDecision.reasons,
       ...smartCopyReasons,
+      ...quoteReasons,
       ...score.reasons
     ];
     signal.signalScore = score.score;
@@ -335,6 +351,18 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
     riskManager.recordError(error);
     await telegram.send("bot_error", error instanceof Error ? error.message : String(error));
   }
+}
+
+function evaluateQuoteDelay(assetId: string, quoteDaemon: QuoteDaemon): string[] {
+  const quote = quoteDaemon.getQuote(assetId);
+  if (!quote) return [];
+  if (quote.quoteDelayMs > config.maxQuoteDelayMs) {
+    return [`Quote daemon delay ${Math.round(quote.quoteDelayMs)}ms exceeds MAX_QUOTE_DELAY_MS.`];
+  }
+  if (!quote.isFresh) {
+    return ["Quote daemon cache is stale for this asset."];
+  }
+  return [];
 }
 
 async function refreshWatchedTraders(input: {

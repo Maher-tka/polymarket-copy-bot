@@ -2,7 +2,8 @@ import { ClobPublicClient } from "../polymarket/clobPublicClient";
 import { MarketEvent } from "../types";
 import { bestAsk, bestBid, orderBookAgeMs, spread } from "./orderBookMath";
 import { MarketEventQueue, scoreEvent } from "./eventQueue";
-import { OrderBook } from "../types";
+import { OrderBook, QuoteCacheEntry } from "../types";
+import { QuoteDaemon } from "../marketData/quoteDaemon";
 
 export interface CachedTopOfBook {
   tokenId: string;
@@ -13,15 +14,20 @@ export interface CachedTopOfBook {
   updatedAt: string;
   stale: boolean;
   staleReason?: string;
-  source: "websocket" | "rest";
+  source: "websocket" | "rest" | "quote-daemon";
 }
 
 export class OrderBookCache {
-  private readonly books = new Map<string, { book: OrderBook; updatedAtMs: number; source: "websocket" | "rest" }>();
+  private readonly books = new Map<string, { book: OrderBook; updatedAtMs: number; source: "websocket" | "rest" | "quote-daemon" }>();
 
   constructor(
     private readonly clobClient: ClobPublicClient,
-    private readonly options: { maxDataAgeMs: number; eventQueue?: MarketEventQueue }
+    private readonly options: {
+      maxDataAgeMs: number;
+      maxQuoteDelayMs?: number;
+      eventQueue?: MarketEventQueue;
+      quoteDaemon?: QuoteDaemon;
+    }
   ) {}
 
   getTopOfBook(tokenId: string): CachedTopOfBook | undefined {
@@ -31,6 +37,25 @@ export class OrderBookCache {
   }
 
   async getFreshOrderBook(tokenId: string): Promise<{ book: OrderBook; top: CachedTopOfBook; fromCache: boolean }> {
+    const quote = this.options.quoteDaemon?.getQuote(tokenId);
+    if (quote && quote.quoteDelayMs > (this.options.maxQuoteDelayMs ?? this.options.maxDataAgeMs)) {
+      throw new Error(`Quote daemon delay ${Math.round(quote.quoteDelayMs)}ms exceeds MAX_QUOTE_DELAY_MS.`);
+    }
+
+    const quoteBook = this.options.quoteDaemon?.getOrderBook(tokenId);
+    if (quoteBook) {
+      this.observeOrderBook(quoteBook, "quote-daemon");
+      const top = this.getTopOfBook(tokenId);
+      if (top && !top.stale) return { book: quoteBook, top, fromCache: true };
+    }
+
+    const patchedBook = quote ? this.mergeQuoteIntoCachedBook(tokenId, quote) : undefined;
+    if (patchedBook) {
+      this.observeOrderBook(patchedBook, "quote-daemon");
+      const top = this.getTopOfBook(tokenId);
+      if (top && !top.stale) return { book: patchedBook, top, fromCache: true };
+    }
+
     const cachedTop = this.getTopOfBook(tokenId);
     if (cachedTop && !cachedTop.stale) {
       const cached = this.books.get(tokenId);
@@ -46,7 +71,7 @@ export class OrderBookCache {
     return { book, top, fromCache: false };
   }
 
-  observeOrderBook(book: OrderBook, source: "websocket" | "rest" = "rest"): void {
+  observeOrderBook(book: OrderBook, source: "websocket" | "rest" | "quote-daemon" = "rest"): void {
     const tokenId = book.asset_id;
     const previous = this.getTopOfBook(tokenId);
     this.books.set(tokenId, { book, updatedAtMs: Date.now(), source });
@@ -102,6 +127,7 @@ export class OrderBookCache {
     book: OrderBook,
     updatedAtMs: number,
     source: "websocket" | "rest"
+      | "quote-daemon"
   ): CachedTopOfBook {
     const dataAgeMs = Math.max(Date.now() - updatedAtMs, orderBookAgeMs(book));
     const stale = dataAgeMs > this.options.maxDataAgeMs;
@@ -115,6 +141,20 @@ export class OrderBookCache {
       stale,
       staleReason: stale ? `Cached order book is stale: ${Math.round(dataAgeMs)}ms old.` : undefined,
       source
+    };
+  }
+
+  private mergeQuoteIntoCachedBook(tokenId: string, quote: QuoteCacheEntry): OrderBook | undefined {
+    if (!quote.isFresh) return undefined;
+    const cached = this.books.get(tokenId);
+    if (!cached) return undefined;
+    return {
+      ...cached.book,
+      timestamp: quote.eventTimestamp ?? quote.receivedAt,
+      hash: `${cached.book.hash}-quote-${Date.now()}`,
+      bids: quote.bestBid === undefined ? cached.book.bids : replaceTopLevel(cached.book.bids, quote.bestBid, "bid"),
+      asks: quote.bestAsk === undefined ? cached.book.asks : replaceTopLevel(cached.book.asks, quote.bestAsk, "ask"),
+      last_trade_price: quote.lastTradePrice === undefined ? cached.book.last_trade_price : String(quote.lastTradePrice)
     };
   }
 
@@ -192,6 +232,18 @@ export class OrderBookCache {
 
     for (const event of events) queue.enqueue(event);
   }
+}
+
+function replaceTopLevel(levels: Array<{ price: string; size: string }>, price: number, side: "bid" | "ask"): Array<{ price: string; size: string }> {
+  const existing = [...levels];
+  const fallbackSize = existing[0]?.size ?? "1";
+  const nextLevel = { price: String(price), size: fallbackSize };
+  if (existing.length === 0) return [nextLevel];
+
+  existing[0] = nextLevel;
+  return side === "bid"
+    ? existing.sort((a, b) => Number(b.price) - Number(a.price))
+    : existing.sort((a, b) => Number(a.price) - Number(b.price));
 }
 
 function normalizeLevels(levels: unknown[]): Array<{ price: string; size: string }> {
