@@ -23,7 +23,7 @@ import { StrategyStateStore } from "./strategyState";
 
 export class MarketMakingMode {
   constructor(
-    private readonly clobClient: ClobPublicClient,
+    private readonly clobClient: Pick<ClobPublicClient, "getOrderBook">,
     private readonly store: StrategyStateStore,
     private readonly execution: StrategyExecutionPort,
     private readonly config: Pick<
@@ -305,6 +305,10 @@ function makerFill(limitPrice: number, shares: number, feeRate: number): FillSim
     slippageUsd: 0,
     slippagePct: 0,
     feeUsd: calculateBinaryTakerFeeUsd(limitPrice, shares, feeRate),
+    spreadCostUsd: 0,
+    staleDataPenaltyUsd: 0,
+    queueUncertaintyUsd: 0,
+    adverseSelectionUsd: 0,
     partial: false,
     depthUsd: notionalUsd
   };

@@ -5,19 +5,21 @@ import { StrategyExecutionPort } from "../execution/executionLayer";
 import { BotConfig, DataApiTrade, PortfolioSnapshot, StrategyOpportunity } from "../types";
 import { bestAsk, bestBid, effectiveTakerFeeRate, orderBookAgeMs, simulateOrderBookFill, spread } from "./orderBookMath";
 import { StrategyStateStore } from "./strategyState";
+import { MarketEventQueue, scoreEvent } from "./eventQueue";
 
 export class WhaleTracker {
   private readonly seenTrades = new Set<string>();
 
   constructor(
     private readonly dataClient: DataClient,
-    private readonly clobClient: ClobPublicClient,
+    private readonly clobClient: Pick<ClobPublicClient, "getOrderBook">,
     private readonly store: StrategyStateStore,
     private readonly execution: StrategyExecutionPort,
     private readonly config: Pick<
       BotConfig,
       "whaleMinTradeUsd" | "takerFeeRate" | "cryptoTakerFeeRate" | "arbitrageTargetShares" | "maxDataAgeMs" | "rejectPartialFills"
-    >
+    >,
+    private readonly eventQueue?: MarketEventQueue
   ) {}
 
   async poll(portfolio: PortfolioSnapshot): Promise<void> {
@@ -75,6 +77,14 @@ export class WhaleTracker {
         createdAt: new Date().toISOString()
       });
       logger.info("Large trade evaluated by whale tracker.", { market: trade.title, notionalUsd, score });
+      this.eventQueue?.enqueue({
+        type: "whale-trade",
+        priority: scoreEvent("whale-trade", score / 20),
+        conditionId: trade.conditionId,
+        tokenId: trade.asset,
+        marketTitle: trade.title,
+        reason: `Large trade detected: $${notionalUsd.toFixed(2)} notional, score ${score}.`
+      });
 
       if (reasons.length > 0) {
         this.store.addRejection({

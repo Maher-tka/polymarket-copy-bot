@@ -19,6 +19,9 @@ import { Portfolio } from "./trading/portfolio";
 import { PaperTrader } from "./trading/paperTrader";
 import { CopySignal } from "./types";
 import { MultiStrategyEngine } from "./strategy/multiStrategyEngine";
+import { evaluateLatency } from "./latency/latencyEngine";
+import { scoreSignal, shouldSkipSmartCopy } from "./strategy/signalScoring";
+import { SignalThrottle } from "./risk/signalThrottle";
 
 async function main(): Promise<void> {
   if (config.mode !== "paper") {
@@ -44,6 +47,7 @@ async function main(): Promise<void> {
   const marketFilter = new MarketFilter(config);
   const paperTrader = new PaperTrader(portfolio);
   const execution = new PaperExecutionLayer({ copyTrader: paperTrader });
+  const signalThrottle = new SignalThrottle(config);
   const telegram = new TelegramNotifier(config);
   const marketWebSocket = config.enableMarketWebSocket ? new MarketWebSocket() : undefined;
   botStatus.setApiConnected(true);
@@ -70,10 +74,11 @@ async function main(): Promise<void> {
     portfolio,
     strategyRisk: strategyRiskManager
   });
+  marketWebSocket?.on("message", (message) => strategyEngine.observeMarketWebSocketMessage(message));
 
   const dashboard = createDashboardServer({ config, portfolio, riskManager, logger, botStatus, strategyEngine });
   await dashboard.start();
-  logger.info(`Dashboard running at http://localhost:${config.dashboardPort}`);
+  logger.info(`Dashboard running at http://${config.dashboardHost}:${config.dashboardPort}`);
   logger.info("Version 1 started in PAPER mode only. No real orders can be placed.");
   await strategyEngine.start();
 
@@ -105,6 +110,7 @@ async function main(): Promise<void> {
       execution,
       portfolio,
       telegram,
+      signalThrottle,
       marketWebSocket
     })
   );
@@ -128,6 +134,7 @@ async function main(): Promise<void> {
         execution,
         portfolio,
         telegram,
+        signalThrottle,
         marketWebSocket
       })
     );
@@ -148,6 +155,7 @@ interface ProcessSignalDeps {
   execution: CopyExecutionPort;
   portfolio: Portfolio;
   telegram: TelegramNotifier;
+  signalThrottle: SignalThrottle;
   marketWebSocket?: MarketWebSocket;
 }
 
@@ -162,9 +170,11 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
     execution,
     portfolio,
     telegram,
+    signalThrottle,
     marketWebSocket
   } = deps;
 
+  const signalDetectedAtMs = Date.now();
   portfolio.addSignal(signal);
   logger.info("New copy signal created.", {
     trader: signal.traderWallet,
@@ -177,6 +187,7 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
 
   try {
     const market = signal.marketSlug ? await gammaClient.getMarketBySlug(signal.marketSlug) : undefined;
+    const decisionStartedAtMs = Date.now();
     const snapshot = await clobPublicClient.buildMarketSnapshot(
       signal.assetId,
       signal.side,
@@ -184,12 +195,79 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
       config.maxCopyPriceDifference,
       signal.traderPrice
     );
+    const decisionCompletedAtMs = Date.now();
+    const orderBookTimestampMs = snapshot.orderBook?.timestamp
+      ? normalizeTimestampMs(snapshot.orderBook.timestamp)
+      : undefined;
+    const latencyDecision = evaluateLatency(
+      {
+        sourceEventTimestampMs: signal.traderTradeTimestamp * 1000,
+        detectedAtMs: signalDetectedAtMs,
+        decisionStartedAtMs,
+        decisionCompletedAtMs,
+        simulatedExecutionAtMs: Date.now(),
+        dataTimestampMs: orderBookTimestampMs
+      },
+      config
+    );
+
+    const throttleReasons = signalThrottle.evaluateSignal(
+      signal.conditionId,
+      portfolio.getSnapshot().openPositions.map((position) => position.conditionId)
+    );
+    if (throttleReasons.length > 0) {
+      signalThrottle.recordSignal(signal.conditionId, false);
+      portfolio.addSkipped(throttleReasons, signal);
+      logger.info("Trade skipped by signal throttle.", { reasons: throttleReasons, signalId: signal.id });
+      return;
+    }
 
     const filterDecision = marketFilter.evaluate(signal, snapshot);
-    if (!filterDecision.accepted) {
-      portfolio.addSkipped(filterDecision.reasons, signal);
-      logger.info("Trade skipped by market filters.", { reasons: filterDecision.reasons, signalId: signal.id });
-      await telegram.send("trade_skipped", filterDecision.reasons.join(" | "));
+    const smartCopyReasons = shouldSkipSmartCopy({ signal, snapshot, latency: latencyDecision.metrics, config });
+    const entryPrice = filterDecision.currentEntryPrice ?? signal.traderPrice;
+    const rawEdge = signal.side === "BUY" ? Math.max(0, signal.traderPrice - entryPrice) : Math.max(0, entryPrice - signal.traderPrice);
+    const realEdge = rawEdge - latencyDecision.penaltyEdge;
+    const score = scoreSignal(
+      {
+        signal,
+        snapshot,
+        portfolio: portfolio.getSnapshot(),
+        realEdge,
+        expectedProfitUsd: realEdge * Math.max(1, signal.traderSize),
+        latency: latencyDecision.metrics,
+        confirmations: [
+          "copy-trader",
+          ...(snapshot.spread <= config.maxSpread ? ["tight-spread" as const] : []),
+          ...(latencyDecision.metrics.dataAgeMs <= config.maxDataAgeMs ? ["fresh-book" as const] : []),
+          ...(realEdge > config.minRealEdge ? ["positive-edge" as const] : [])
+        ],
+        highRisk: signal.traderNotionalUsd > config.maxTradeUsd
+      },
+      config
+    );
+    const combinedRejectReasons = [
+      ...latencyDecision.reasons,
+      ...filterDecision.reasons,
+      ...smartCopyReasons,
+      ...score.reasons
+    ];
+    signal.signalScore = score.score;
+    signal.confirmations = score.confirmations;
+    signal.realEdge = realEdge;
+    signal.latency = latencyDecision.metrics;
+    signal.detectedAt = new Date(signalDetectedAtMs).toISOString();
+
+    if (combinedRejectReasons.length > 0) {
+      signalThrottle.recordSignal(signal.conditionId, false);
+      portfolio.addSkipped(combinedRejectReasons, signal);
+      logger.info("Trade skipped by smart copy / latency / scoring gates.", {
+        reasons: combinedRejectReasons,
+        score: score.score,
+        realEdge,
+        latency: latencyDecision.metrics,
+        signalId: signal.id
+      });
+      await telegram.send("trade_skipped", combinedRejectReasons.join(" | "));
       return;
     }
 
@@ -216,7 +294,17 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
       return;
     }
 
+    const tradeThrottleReasons = signalThrottle.evaluateTrade();
+    if (tradeThrottleReasons.length > 0) {
+      signalThrottle.recordSignal(signal.conditionId, false);
+      portfolio.addSkipped(tradeThrottleReasons, signal);
+      logger.info("Trade skipped by trade throttle.", { reasons: tradeThrottleReasons, signalId: signal.id });
+      return;
+    }
+
     const result = execution.executeCopySignal(signal, filterDecision.currentEntryPrice ?? signal.traderPrice, size);
+    signalThrottle.recordSignal(signal.conditionId, true);
+    signalThrottle.recordTrade();
     marketWebSocket?.subscribe([signal.assetId]);
     await markOpenPositions(portfolio, clobPublicClient);
 
@@ -233,6 +321,13 @@ async function processSignal(deps: ProcessSignalDeps): Promise<void> {
     riskManager.recordError(error);
     await telegram.send("bot_error", error instanceof Error ? error.message : String(error));
   }
+}
+
+function normalizeTimestampMs(timestamp: string): number | undefined {
+  const raw = Number(timestamp);
+  if (Number.isFinite(raw)) return raw > 10_000_000_000 ? raw : raw * 1000;
+  const parsed = new Date(timestamp).getTime();
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 async function markOpenPositions(portfolio: Portfolio, clobPublicClient: ClobPublicClient): Promise<void> {

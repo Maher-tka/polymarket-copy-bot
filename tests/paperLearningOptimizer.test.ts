@@ -63,6 +63,11 @@ describe("PaperLearningOptimizer", () => {
           winRate: 0.64,
           averageNetEdge: 0.002,
           averageActualEdge: 0.001,
+          netProfitPerTrade: 0.03,
+          profitFactor: 1.8,
+          expectancyPerTrade: 0.03,
+          maxDrawdownUsd: 0.1,
+          latencyAdjustedPnlUsd: 1.1,
           status: "paper-candidate"
         },
         {
@@ -74,6 +79,11 @@ describe("PaperLearningOptimizer", () => {
           winRate: 0.37,
           averageNetEdge: -0.001,
           averageActualEdge: -0.002,
+          netProfitPerTrade: -0.026,
+          profitFactor: 0.5,
+          expectancyPerTrade: -0.026,
+          maxDrawdownUsd: 0.8,
+          latencyAdjustedPnlUsd: -0.9,
           status: "losing"
         }
       ]
@@ -138,11 +148,22 @@ function strategyState(overrides: Partial<StrategyEngineState["losingDiagnostics
       averageEdge: 0,
       averageActualEdge: 0,
       averageDepthUsd: 0,
+      netProfitPerTrade: 0,
+      averageWin: 0,
+      averageLoss: 0,
+      profitFactor: 0,
+      expectancyPerTrade: 0,
+      latencyAdjustedPnlUsd: 0,
+      latencyAverageMs: 0,
+      latencyP95Ms: 0,
+      staleDataCount: 0,
+      staleDataPct: 0,
       strategyRanking: [],
       ...overrides
     },
     makerOrders: [],
     metrics: [],
+    marketEvents: [],
     recorder: {
       enabled: false,
       snapshotsRecorded: 0,

@@ -417,9 +417,10 @@ export function App() {
               </div>
             </section>
 
-            <section id="logs" className="grid scroll-mt-24 gap-4 xl:grid-cols-3">
+            <section id="logs" className="grid scroll-mt-24 gap-4 xl:grid-cols-4">
               <SkippedTradesPanel skipped={state.portfolio.skippedTrades} />
               <LogsPanel title="Bot Logs" logs={filteredLogs} filters={filters} setFilters={setFilters} />
+              <EventFeedPanel state={state} />
               <LatencyPanel state={state} logs={state.logs} />
             </section>
 
@@ -581,12 +582,13 @@ function TradingCommandCenter({ state, sseConnected }: { state: DashboardState; 
   const rejected = summary?.rejectedSignals ?? 0;
   const rejectionRate = signals > 0 ? rejected / signals : 0;
   const netPnl = summary?.netPnlUsd ?? 0;
-  const winRate = summary?.winRate ?? 0;
+  const expectancy = summary?.expectancyPerTrade ?? 0;
+  const profitFactor = summary?.profitFactor ?? 0;
   const averageDelay = summary?.averageDataDelayMs ?? 0;
   const delayOk = averageDelay <= state.safeConfig.maxDataAgeMs;
   const realLocked = state.safeConfig.paperTradingOnly && !state.safeConfig.realTradingEnabled && state.mode === "PAPER";
   const enoughSample = trades >= 100 || signals >= 1000;
-  const paperCandidate = Boolean(best && best.netPnlUsd > 0 && best.winRate >= 0.6 && enoughSample);
+  const paperCandidate = Boolean(best && best.expectancyPerTrade > 0 && best.profitFactor > 1.5 && best.latencyAdjustedPnlUsd > 0 && enoughSample);
   const recommendation = !realLocked
     ? "Lock real mode"
     : !delayOk
@@ -615,7 +617,7 @@ function TradingCommandCenter({ state, sseConnected }: { state: DashboardState; 
             </div>
             <div className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
               {best
-                ? `${money(best.netPnlUsd)} net, ${percent(best.winRate)} win rate, ${best.trades} trades, ${best.signals} signals.`
+                ? `${money(best.expectancyPerTrade)} expectancy, ${best.profitFactor.toFixed(2)} profit factor, ${money(best.latencyAdjustedPnlUsd)} latency-adjusted, ${best.trades} trades.`
                 : "Waiting for strategy diagnostics from the paper engine."}
             </div>
           </div>
@@ -639,10 +641,10 @@ function TradingCommandCenter({ state, sseConnected }: { state: DashboardState; 
         />
         <CommandTile
           icon={LineChart}
-          label="Paper Edge"
-          value={money(netPnl)}
-          detail={`${percent(winRate)} win rate`}
-          tone={netPnl >= 0 ? "positive" : "negative"}
+          label="Expectancy"
+          value={money(expectancy)}
+          detail={`${money(netPnl)} net, PF ${Number.isFinite(profitFactor) ? profitFactor.toFixed(2) : "∞"}`}
+          tone={expectancy > 0 && profitFactor > 1.5 ? "positive" : "negative"}
         />
         <CommandTile
           icon={Target}
@@ -709,7 +711,7 @@ function CommandTile({
 function StrategyPulsePanel({ state }: { state: DashboardState }) {
   const summary = state.strategies?.losingDiagnostics;
   const best = summary?.strategyRanking[0];
-  const bestIsCandidate = Boolean(best && best.winRate >= 0.6 && best.netPnlUsd >= 0);
+  const bestIsCandidate = Boolean(best && best.expectancyPerTrade > 0 && best.profitFactor > 1.5 && best.latencyAdjustedPnlUsd > 0);
 
   return (
     <div
@@ -729,7 +731,7 @@ function StrategyPulsePanel({ state }: { state: DashboardState }) {
             </div>
             <div className="mt-1 text-xs leading-5 text-muted-foreground">
               {best
-                ? `${percent(best.winRate)} win rate, ${money(best.netPnlUsd)} net PnL, ${best.trades} paper trades, ${best.signals} signals. This is paper-only and still locked away from real orders.`
+                ? `${money(best.expectancyPerTrade)} expectancy, ${best.profitFactor.toFixed(2)} profit factor, ${money(best.netProfitPerTrade)} net/trade, ${best.trades} paper trades. This is paper-only and still locked away from real orders.`
                 : "No strategy ranking is available yet. The engine needs live quotes before it can rank strategies."}
             </div>
           </div>
@@ -750,11 +752,13 @@ function StrategySummaryCards({ state }: { state: DashboardState }) {
   const strategyTrades = summary?.tradesTaken ?? 0;
   const strategyWinRate = summary?.winRate ?? 0;
   const strategyNetPnl = summary?.netPnlUsd ?? 0;
-  const strategyGrossPnl = summary?.grossPnlUsd ?? 0;
+  const expectancy = summary?.expectancyPerTrade ?? 0;
+  const netPerTrade = summary?.netProfitPerTrade ?? 0;
+  const profitFactor = summary?.profitFactor ?? 0;
   const rejected = summary?.rejectedSignals ?? 0;
   const totalSignals = summary?.totalSignals ?? 0;
-  const avgActualEdge = summary?.averageActualEdge ?? 0;
-  const avgDelay = summary?.averageDataDelayMs ?? 0;
+  const latencyP95 = summary?.latencyP95Ms ?? 0;
+  const avgDelay = summary?.latencyAverageMs ?? summary?.averageDataDelayMs ?? 0;
 
   return (
     <div className="space-y-2">
@@ -767,15 +771,21 @@ function StrategySummaryCards({ state }: { state: DashboardState }) {
         </div>
         <Badge variant={state.strategies?.realTradingEnabled ? "destructive" : "success"}>Real trading locked</Badge>
       </div>
+      {summary?.misleadingWinRateWarning && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+          {summary.misleadingWinRateWarning}
+        </div>
+      )}
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
         <SummaryCard title="Best Strategy" value={best ? strategyLabel(best.strategy) : "Collecting"} icon={BarChart3} />
         <SummaryCard title="Strategy Net PnL" value={money(strategyNetPnl)} icon={TrendingUp} tone={strategyNetPnl >= 0 ? "positive" : "negative"} />
-        <SummaryCard title="Strategy Gross" value={money(strategyGrossPnl)} icon={CircleDollarSign} tone={strategyGrossPnl >= 0 ? "positive" : "negative"} />
-        <SummaryCard title="Strategy Win Rate" value={percent(strategyWinRate)} icon={Gauge} tone={strategyWinRate >= 0.6 ? "positive" : "negative"} />
+        <SummaryCard title="Expectancy" value={money(expectancy)} icon={Target} tone={expectancy > 0 ? "positive" : "negative"} />
+        <SummaryCard title="Net / Trade" value={money(netPerTrade)} icon={CircleDollarSign} tone={netPerTrade > 0.01 ? "positive" : "negative"} />
+        <SummaryCard title="Profit Factor" value={Number.isFinite(profitFactor) ? profitFactor.toFixed(2) : "∞"} icon={Gauge} tone={profitFactor > 1.5 ? "positive" : "negative"} />
+        <SummaryCard title="Win Rate" value={percent(strategyWinRate)} icon={Gauge} tone={summary?.misleadingWinRateWarning ? "negative" : strategyWinRate >= 0.6 ? "positive" : "negative"} />
         <SummaryCard title="Paper Trades" value={String(strategyTrades)} icon={History} />
         <SummaryCard title="Rejected Signals" value={`${rejected}/${Math.max(totalSignals, 0)}`} icon={ShieldAlert} tone={rejected > strategyTrades ? "positive" : "neutral"} />
-        <SummaryCard title="Avg Actual Edge" value={`${(avgActualEdge * 100).toFixed(2)}%`} icon={Activity} tone={avgActualEdge >= 0 ? "positive" : "negative"} />
-        <SummaryCard title="Avg Data Delay" value={`${avgDelay.toFixed(0)}ms`} icon={Clock3} tone={avgDelay <= state.safeConfig.maxDataAgeMs ? "positive" : "negative"} />
+        <SummaryCard title="Latency p95" value={`${latencyP95.toFixed(0)}ms`} icon={Clock3} tone={latencyP95 <= state.safeConfig.maxTotalLatencyMs ? "positive" : "negative"} />
       </section>
     </div>
   );
@@ -1916,6 +1926,7 @@ function LogsPanel({
 
 function LatencyPanel({ state, logs }: { state: DashboardState; logs: LogEvent[] }) {
   const recentErrors = logs.filter((log) => log.level === "error").slice(0, 5);
+  const summary = state.strategies?.losingDiagnostics;
   return (
     <Card>
       <CardHeader>
@@ -1928,6 +1939,9 @@ function LatencyPanel({ state, logs }: { state: DashboardState; logs: LogEvent[]
           <MiniDatum label="Subscribed assets" value={String(state.status.marketWebSocketSubscribedAssets)} />
           <MiniDatum label="Last WS msg" value={timeAgo(state.status.lastMarketWebSocketMessageAt)} />
           <MiniDatum label="SSE refresh" value="0.5s" />
+          <MiniDatum label="Latency avg" value={summary ? `${summary.latencyAverageMs.toFixed(0)}ms` : "n/a"} />
+          <MiniDatum label="Latency p95" value={summary ? `${summary.latencyP95Ms.toFixed(0)}ms` : "n/a"} />
+          <MiniDatum label="Stale data" value={summary ? percent(summary.staleDataPct) : "n/a"} />
           <MiniDatum label="Arb scan" value={`${state.safeConfig.arbitrageScanIntervalSeconds}s`} />
           <MiniDatum label="MM scan" value={`${state.safeConfig.marketMakingIntervalSeconds}s`} />
           <MiniDatum label="Position mark" value={`${state.safeConfig.positionMarkIntervalSeconds}s`} />
@@ -1944,6 +1958,38 @@ function LatencyPanel({ state, logs }: { state: DashboardState; logs: LogEvent[]
             ))}
           </div>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function EventFeedPanel({ state }: { state: DashboardState }) {
+  const events = state.strategies?.marketEvents ?? [];
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Event Feed</CardTitle>
+        <Badge variant="outline">{events.length}</Badge>
+      </CardHeader>
+      <CardContent>
+        <ScrollArea className="h-[360px] pr-3">
+          {events.length === 0 ? (
+            <EmptyState icon={Radio} title="No market events yet" body="Freshness, spread, liquidity, price, copy, and whale events will appear here." compact />
+          ) : (
+            <div className="space-y-2">
+              {events.slice(0, 30).map((event) => (
+                <div key={event.id} className="rounded-md border border-border bg-background/60 p-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <Badge variant={event.priority >= 75 ? "warning" : "outline"}>{event.type}</Badge>
+                    <span className="text-muted-foreground">{timeAgo(event.timestamp)}</span>
+                  </div>
+                  <div className="mt-2 text-sm">{event.reason}</div>
+                  <div className="mt-1 truncate text-muted-foreground">{event.marketTitle ?? event.tokenId ?? event.conditionId}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </ScrollArea>
       </CardContent>
     </Card>
   );

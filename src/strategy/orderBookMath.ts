@@ -125,6 +125,8 @@ export function simulateOrderBookFill(
         ? Math.max(0, averagePrice - topOfBookPrice)
         : Math.max(0, topOfBookPrice - averagePrice);
   const slippageUsd = slippagePerShare * filledShares;
+  const spreadCostUsd =
+    topOfBookPrice === undefined ? 0 : Math.max(0, Math.abs(averagePrice - topOfBookPrice)) * filledShares;
   return {
     requestedShares,
     filledShares,
@@ -135,6 +137,10 @@ export function simulateOrderBookFill(
     slippageUsd,
     slippagePct: topOfBookPrice ? slippagePerShare / topOfBookPrice : 0,
     feeUsd,
+    spreadCostUsd,
+    staleDataPenaltyUsd: 0,
+    queueUncertaintyUsd: 0,
+    adverseSelectionUsd: 0,
     partial: filledShares + 1e-9 < requestedShares,
     depthUsd
   };

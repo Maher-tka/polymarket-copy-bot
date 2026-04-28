@@ -15,6 +15,8 @@ import { NetArbitrageScanner } from "./netArbitrageScanner";
 import { parseBinaryMarket, isCryptoUpDownMarket, isShortTermCryptoBinaryMarket, simulateOrderBookFill } from "./orderBookMath";
 import { StrategyStateStore } from "./strategyState";
 import { WhaleTracker } from "./whaleTracker";
+import { MarketEventQueue, scoreEvent } from "./eventQueue";
+import { OrderBookCache } from "./orderBookCache";
 
 export class MultiStrategyEngine {
   private readonly database = new LocalDatabase();
@@ -25,6 +27,8 @@ export class MultiStrategyEngine {
   private readonly makerArb: MakerArbitrageMode;
   private readonly marketMaking: MarketMakingMode;
   private readonly whaleTracker: WhaleTracker;
+  private readonly eventQueue = new MarketEventQueue();
+  private readonly orderBookCache: OrderBookCache;
   private timers: NodeJS.Timeout[] = [];
   private marketCache: BinaryMarketCandidate[] = [];
   private lastMarketLoadAt = 0;
@@ -46,16 +50,23 @@ export class MultiStrategyEngine {
     });
     this.execution = new PaperExecutionLayer({ strategyTrader: new StrategyPaperTrader(this.store) });
     this.learning = new PaperLearningOptimizer(deps.config);
+    this.orderBookCache = new OrderBookCache(deps.clobClient, {
+      maxDataAgeMs: deps.config.maxDataAgeMs,
+      eventQueue: this.eventQueue
+    });
+    const cachedClob = {
+      getOrderBook: async (tokenId: string) => (await this.orderBookCache.getFreshOrderBook(tokenId)).book
+    };
     this.netArb = new NetArbitrageScanner(
-      deps.clobClient,
+      cachedClob,
       this.store,
       this.execution,
       deps.strategyRisk,
       deps.config
     );
-    this.makerArb = new MakerArbitrageMode(deps.clobClient, this.store, this.execution, deps.config);
-    this.marketMaking = new MarketMakingMode(deps.clobClient, this.store, this.execution, deps.config);
-    this.whaleTracker = new WhaleTracker(deps.dataClient, deps.clobClient, this.store, this.execution, deps.config);
+    this.makerArb = new MakerArbitrageMode(cachedClob, this.store, this.execution, deps.config);
+    this.marketMaking = new MarketMakingMode(cachedClob, this.store, this.execution, deps.config);
+    this.whaleTracker = new WhaleTracker(deps.dataClient, cachedClob, this.store, this.execution, deps.config, this.eventQueue);
   }
 
   async start(): Promise<void> {
@@ -83,7 +94,7 @@ export class MultiStrategyEngine {
 
   getState(): StrategyEngineState {
     const state = this.store.getState();
-    return { ...state, learning: this.learning.getState() };
+    return { ...state, learning: this.learning.getState(), marketEvents: this.eventQueue.peek(100) };
   }
 
   exportCsv(): string {
@@ -105,10 +116,15 @@ export class MultiStrategyEngine {
     logger.warn(confirmed ? "Real-trading UI confirmation set." : "Real-trading UI confirmation cleared.");
   }
 
+  observeMarketWebSocketMessage(message: unknown): void {
+    this.orderBookCache.observeWebSocketMessage(message);
+  }
+
   private async runScannerTick(): Promise<void> {
     this.refreshLearning();
     if (!this.learning.shouldRun("net-arbitrage")) return;
     const candidates = await this.loadMarketCandidates();
+    if (!this.shouldRunForEvents(["spread-tightened", "freshness-restored", "price-jump", "copy-signal"], candidates)) return;
     await this.netArb.scan(candidates, this.deps.portfolio.getSnapshot());
     await this.recordSnapshots(candidates.slice(0, 4));
   }
@@ -117,6 +133,7 @@ export class MultiStrategyEngine {
     this.refreshLearning();
     if (!this.learning.shouldRun("maker-arbitrage")) return;
     const candidates = await this.loadMarketCandidates();
+    if (!this.shouldRunForEvents(["spread-tightened", "freshness-restored", "price-jump"], candidates)) return;
     await this.makerArb.tick(candidates, this.deps.portfolio.getSnapshot());
   }
 
@@ -124,6 +141,7 @@ export class MultiStrategyEngine {
     this.refreshLearning();
     if (!this.learning.shouldRun("market-making")) return;
     const candidates = await this.loadMarketCandidates();
+    if (!this.shouldRunForEvents(["spread-tightened", "freshness-restored", "liquidity-drop"], candidates)) return;
     await this.marketMaking.tick(candidates, this.deps.portfolio.getSnapshot());
   }
 
@@ -190,6 +208,17 @@ export class MultiStrategyEngine {
     }
 
     this.marketCache = [...byCondition.values()].sort((a, b) => b.volumeUsd - a.volumeUsd);
+    for (const candidate of this.marketCache.slice(0, 20)) {
+      this.eventQueue.enqueue({
+        type: "freshness-restored",
+        priority: scoreEvent("freshness-restored", 0),
+        conditionId: candidate.conditionId,
+        tokenId: candidate.yesTokenId,
+        marketTitle: candidate.title,
+        reason: "Market candidate loaded for event-driven paper scan.",
+        liquidityUsd: candidate.liquidityUsd
+      });
+    }
 
     this.lastMarketLoadAt = Date.now();
     logger.info("Multi-strategy market universe loaded.", {
@@ -299,6 +328,12 @@ export class MultiStrategyEngine {
         });
       }
     }
+  }
+
+  private shouldRunForEvents(types: string[], candidates: BinaryMarketCandidate[]): boolean {
+    const events = this.eventQueue.drainMatching(types, 20);
+    if (events.length === 0) return candidates.length > 0 && this.marketCache.length === 0;
+    return true;
   }
 
   private async recordSnapshots(candidates: BinaryMarketCandidate[]): Promise<void> {

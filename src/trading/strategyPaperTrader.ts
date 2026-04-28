@@ -14,10 +14,11 @@ export class StrategyPaperTrader {
   ): StrategyPaperTrade {
     const shares = Math.min(yesFill.filledShares, noFill.filledShares);
     const entryNotionalUsd = yesFill.notionalUsd + noFill.notionalUsd;
-    const entryCostUsd = entryNotionalUsd + yesFill.feeUsd + noFill.feeUsd;
+    const nonFeeCosts = realisticNonFeeCosts(yesFill) + realisticNonFeeCosts(noFill);
+    const entryCostUsd = entryNotionalUsd + yesFill.feeUsd + noFill.feeUsd + nonFeeCosts;
     const lockedExitValueUsd = shares;
     const grossPnlUsd = lockedExitValueUsd - entryNotionalUsd;
-    const unrealizedPnlUsd = grossPnlUsd - yesFill.feeUsd - noFill.feeUsd;
+    const unrealizedPnlUsd = grossPnlUsd - yesFill.feeUsd - noFill.feeUsd - nonFeeCosts;
     const fillRate = Math.min(yesFill.fillRate, noFill.fillRate);
 
     const trade = this.buildTrade({
@@ -29,7 +30,7 @@ export class StrategyPaperTrader {
       grossPnlUsd,
       unrealizedPnlUsd,
       feesUsd: yesFill.feeUsd + noFill.feeUsd,
-      slippageUsd: yesFill.slippageUsd + noFill.slippageUsd,
+      slippageUsd: yesFill.slippageUsd + noFill.slippageUsd + nonFeeCosts,
       fillRate,
       status: fillRate >= 1 ? "filled" : "partial"
     });
@@ -52,16 +53,17 @@ export class StrategyPaperTrader {
     fill: FillSimulation,
     expectedEdgeUsd: number
   ): StrategyPaperTrade {
+    const nonFeeCosts = realisticNonFeeCosts(fill);
     const trade = this.buildTrade({
       strategy,
       opportunity,
       side: opportunity.side ?? "BUY",
       shares: fill.filledShares,
-      entryCostUsd: fill.notionalUsd + fill.feeUsd,
+      entryCostUsd: fill.notionalUsd + fill.feeUsd + nonFeeCosts,
       grossPnlUsd: expectedEdgeUsd,
-      unrealizedPnlUsd: expectedEdgeUsd - fill.slippageUsd - fill.feeUsd,
+      unrealizedPnlUsd: expectedEdgeUsd - fill.slippageUsd - fill.feeUsd - nonFeeCosts,
       feesUsd: fill.feeUsd,
-      slippageUsd: fill.slippageUsd,
+      slippageUsd: fill.slippageUsd + nonFeeCosts,
       fillRate: fill.fillRate,
       status: fill.fillRate >= 1 ? "filled" : "partial"
     });
@@ -145,4 +147,13 @@ export class StrategyPaperTrader {
 
 function round(value: number): number {
   return Math.round(value * 10000) / 10000;
+}
+
+function realisticNonFeeCosts(fill: FillSimulation): number {
+  return (
+    (fill.spreadCostUsd ?? 0) +
+    (fill.staleDataPenaltyUsd ?? 0) +
+    (fill.queueUncertaintyUsd ?? 0) +
+    (fill.adverseSelectionUsd ?? 0)
+  );
 }

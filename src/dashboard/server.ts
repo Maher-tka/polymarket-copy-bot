@@ -92,7 +92,20 @@ export function createDashboardServer({ config, portfolio, riskManager, logger, 
         paperLearningEnabled: config.paperLearningEnabled,
         paperLearningAutoApply: config.paperLearningAutoApply,
         paperLearningMinSignals: config.paperLearningMinSignals,
-        paperLearningMinTrades: config.paperLearningMinTrades
+        paperLearningMinTrades: config.paperLearningMinTrades,
+        dashboardHost: config.dashboardHost,
+        maxTotalLatencyMs: config.maxTotalLatencyMs,
+        latencyPenaltyBpsPerSecond: config.latencyPenaltyBpsPerSecond,
+        minRealEdge: config.minRealEdge,
+        minSignalScore: config.minSignalScore,
+        highRiskConfirmationCount: config.highRiskConfirmationCount,
+        maxSignalsPerMinute: config.maxSignalsPerMinute,
+        maxTradesPerMinute: config.maxTradesPerMinute,
+        maxActiveMarkets: config.maxActiveMarkets,
+        lossCooldownSeconds: config.lossCooldownSeconds,
+        minCopyTradeUsd: config.minCopyTradeUsd,
+        misleadingWinRateMinWinRate: config.misleadingWinRateMinWinRate,
+        misleadingWinRateMaxProfitPerTrade: config.misleadingWinRateMaxProfitPerTrade
       }
     };
   };
@@ -155,7 +168,7 @@ export function createDashboardServer({ config, portfolio, riskManager, logger, 
   return {
     start: () =>
       new Promise<void>((resolve) => {
-        app.listen(config.dashboardPort, () => resolve());
+        app.listen(config.dashboardPort, config.dashboardHost, () => resolve());
       })
   };
 }

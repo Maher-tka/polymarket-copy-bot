@@ -42,9 +42,15 @@ rejected by reason:
 ${rejectedByReason}
 win rate: ${pct(summary.winRate)}
 net PnL: ${money(summary.netPnlUsd)}
+net profit/trade: ${money(summary.netProfitPerTrade)}
+expectancy/trade: ${money(summary.expectancyPerTrade)}
+profit factor: ${Number.isFinite(summary.profitFactor) ? summary.profitFactor.toFixed(2) : "infinite"}
+average win: ${money(summary.averageWin)}
+average loss: ${money(summary.averageLoss)}
 gross PnL: ${money(summary.grossPnlUsd)}
 fees: ${money(summary.totalFeesUsd)}
 slippage: ${money(summary.totalSlippageUsd)}
+latency-adjusted PnL: ${money(summary.latencyAdjustedPnlUsd)}
 estimated quote fees: ${money(summary.estimatedFeesUsd)}
 estimated quote slippage: ${money(summary.estimatedSlippageUsd)}
 average edge: ${pct(summary.averageEdge)}
@@ -60,12 +66,15 @@ losses caused by slippage: ${summary.lossesCausedBySlippage}
 losses caused by stale data: ${summary.lossesCausedByStaleData}
 losses caused by illiquidity: ${summary.lossesCausedByIlliquidity}
 average data age: ${Math.round(summary.averageDataDelayMs)}ms
+latency average/p95: ${Math.round(summary.latencyAverageMs)}ms / ${Math.round(summary.latencyP95Ms)}ms
+stale-data percentage: ${pct(summary.staleDataPct)}
 average depth: ${money(summary.averageDepthUsd)}
+paper realism warning: ${summary.misleadingWinRateWarning ?? "none"}
 best strategy: ${sortedStrategies[0] ? `${sortedStrategies[0][0]} (${money(sortedStrategies[0][1])})` : "not enough data"}
 worst strategy: ${sortedStrategies.at(-1) ? `${sortedStrategies.at(-1)?.[0]} (${money(sortedStrategies.at(-1)?.[1] ?? 0)})` : "not enough data"}
 
-strategy ranking:
-${summary.strategyRanking.map((item, index) => `  ${index + 1}. ${item.label} | ${money(item.netPnlUsd)} | trades=${item.trades} | signals=${item.signals} | ${item.status}`).join("\n")}
+strategy ranking by expectancy:
+${summary.strategyRanking.map((item, index) => `  ${index + 1}. ${item.label} | expectancy=${money(item.expectancyPerTrade)} | profitFactor=${Number.isFinite(item.profitFactor) ? item.profitFactor.toFixed(2) : "infinite"} | net/trade=${money(item.netProfitPerTrade)} | latencyAdj=${money(item.latencyAdjustedPnlUsd)} | trades=${item.trades} | signals=${item.signals} | ${item.status}${item.misleadingWinRateWarning ? " | WARNING: " + item.misleadingWinRateWarning : ""}`).join("\n")}
 
 top 10 losing trades with reason:
 ${losingTrades || "  - none"}

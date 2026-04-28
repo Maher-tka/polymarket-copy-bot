@@ -154,8 +154,12 @@ export interface StrategyOpportunity {
   estimatedTakerFees?: number;
   estimatedSlippage?: number;
   netCost?: number;
+  realEdge?: number;
+  latencyPenaltyUsd?: number;
   edge: number;
   score?: number;
+  signalScore?: number;
+  confirmations?: string[];
   targetShares?: number;
   targetNotionalUsd?: number;
   depthUsd?: number;
@@ -163,6 +167,8 @@ export interface StrategyOpportunity {
   reason?: string;
   createdAt: string;
   latencyMs?: number;
+  totalLatencyMs?: number;
+  dataAgeMs?: number;
   marketEndDate?: string;
   secondsToClose?: number;
   projectedLockedProfitUsd?: number;
@@ -281,6 +287,18 @@ export interface StrategyMetrics {
   fillRate: number;
   averageEdge: number;
   averageActualEdge: number;
+  netProfitPerTrade: number;
+  averageWin: number;
+  averageLoss: number;
+  profitFactor: number;
+  expectancyPerTrade: number;
+  realizedPnlUsd: number;
+  unrealizedPnlUsd: number;
+  feesSlippageAdjustedPnlUsd: number;
+  latencyAdjustedPnlUsd: number;
+  latencyAverageMs: number;
+  latencyP95Ms: number;
+  misleadingWinRateWarning?: string;
   averageSlippage: number;
   rejectedCount: number;
   acceptedCount: number;
@@ -318,6 +336,17 @@ export interface LosingDiagnosticsSummary {
   averageEdge: number;
   averageActualEdge: number;
   averageDepthUsd: number;
+  netProfitPerTrade: number;
+  averageWin: number;
+  averageLoss: number;
+  profitFactor: number;
+  expectancyPerTrade: number;
+  latencyAdjustedPnlUsd: number;
+  latencyAverageMs: number;
+  latencyP95Ms: number;
+  staleDataCount: number;
+  staleDataPct: number;
+  misleadingWinRateWarning?: string;
   worstTrade?: StrategyPaperTrade;
   bestTrade?: StrategyPaperTrade;
   mostProfitableStrategy?: StrategyName;
@@ -331,8 +360,28 @@ export interface LosingDiagnosticsSummary {
     winRate: number;
     averageNetEdge: number;
     averageActualEdge: number;
+    netProfitPerTrade: number;
+    profitFactor: number;
+    expectancyPerTrade: number;
+    maxDrawdownUsd: number;
+    latencyAdjustedPnlUsd: number;
+    misleadingWinRateWarning?: string;
     status: "real-locked-positive" | "paper-candidate" | "needs-more-data" | "losing";
   }>;
+}
+
+export interface MarketEvent {
+  id: string;
+  type: string;
+  priority: number;
+  timestamp: string;
+  conditionId?: string;
+  tokenId?: string;
+  marketTitle?: string;
+  reason: string;
+  dataAgeMs?: number;
+  spread?: number;
+  liquidityUsd?: number;
 }
 
 export interface PaperLearningAdjustment {
@@ -368,6 +417,7 @@ export interface StrategyEngineState {
   losingDiagnostics: LosingDiagnosticsSummary;
   makerOrders: SimulatedMakerOrder[];
   metrics: StrategyMetrics[];
+  marketEvents: MarketEvent[];
   learning?: PaperLearningState;
   recorder: {
     enabled: boolean;
@@ -449,6 +499,19 @@ export interface DashboardState {
     paperLearningAutoApply: boolean;
     paperLearningMinSignals: number;
     paperLearningMinTrades: number;
+    dashboardHost: string;
+    maxTotalLatencyMs: number;
+    latencyPenaltyBpsPerSecond: number;
+    minRealEdge: number;
+    minSignalScore: number;
+    highRiskConfirmationCount: number;
+    maxSignalsPerMinute: number;
+    maxTradesPerMinute: number;
+    maxActiveMarkets: number;
+    lossCooldownSeconds: number;
+    minCopyTradeUsd: number;
+    misleadingWinRateMinWinRate: number;
+    misleadingWinRateMaxProfitPerTrade: number;
   };
 }
 

@@ -22,10 +22,11 @@ import {
   spread
 } from "./orderBookMath";
 import { StrategyStateStore } from "./strategyState";
+import { latencyPenaltyEdge } from "../latency/latencyEngine";
 
 export class NetArbitrageScanner {
   constructor(
-    private readonly clobClient: ClobPublicClient,
+    private readonly clobClient: Pick<ClobPublicClient, "getOrderBook">,
     private readonly store: StrategyStateStore,
     private readonly execution: StrategyExecutionPort,
     private readonly risk: StrategyRiskManager,
@@ -45,6 +46,9 @@ export class NetArbitrageScanner {
       | "requireBothLegsFillable"
       | "rejectPartialFills"
       | "finalEntryBufferSeconds"
+      | "maxTotalLatencyMs"
+      | "latencyPenaltyBpsPerSecond"
+      | "minRealEdge"
     >
   ) {}
 
@@ -124,18 +128,27 @@ export class NetArbitrageScanner {
     const yesFill = simulateOrderBookFill(yesBook, "BUY", targetShares, takerFeeRate);
     const noFill = simulateOrderBookFill(noBook, "BUY", targetShares, takerFeeRate);
     const opportunity = this.buildOpportunity(candidate, yesFill, noFill, Date.now() - scanStartedAt);
+    const totalLatencyMs = Date.now() - scanStartedAt;
+    const penaltyEdge = latencyPenaltyEdge(totalLatencyMs, this.config.latencyPenaltyBpsPerSecond);
+    const filledShares = Math.min(yesFill.filledShares, noFill.filledShares);
+    opportunity.totalLatencyMs = round(totalLatencyMs);
+    opportunity.dataAgeMs = round(maxAgeMs);
+    opportunity.latencyPenaltyUsd = round(penaltyEdge * filledShares);
+    opportunity.realEdge = round((opportunity.edge ?? 0) - penaltyEdge);
     const intendedCapitalUsd = yesFill.notionalUsd + noFill.notionalUsd + yesFill.feeUsd + noFill.feeUsd;
 
     logger.debug("Net arb quote evaluated.", {
       market: candidate.title,
       rawCost: opportunity.rawCost,
       edge: opportunity.edge,
+      realEdge: opportunity.realEdge,
       yesFillRate: yesFill.fillRate,
       noFillRate: noFill.fillRate,
+      totalLatencyMs,
       maxAgeMs
     });
 
-    const reasons = this.rejectionReasons(candidate, opportunity, yesFill, noFill, maxAgeMs, pairSpread, intendedCapitalUsd);
+    const reasons = this.rejectionReasons(candidate, opportunity, yesFill, noFill, maxAgeMs, pairSpread, intendedCapitalUsd, totalLatencyMs);
     reasons.push(
       ...this.risk.evaluate(
         opportunity,
@@ -163,6 +176,7 @@ export class NetArbitrageScanner {
       estimatedFeesUsd: round(yesFill.feeUsd + noFill.feeUsd),
       estimatedSlippageUsd: round(yesFill.slippageUsd + noFill.slippageUsd),
       netEdge: opportunity.edge,
+      realEdge: opportunity.realEdge,
       accepted: reasons.length === 0,
       rejectionReasons: reasons,
       simulatedEntryPrice: opportunity.netCost,
@@ -173,6 +187,9 @@ export class NetArbitrageScanner {
       secondsToClose: roundOptional(secondsUntilClose(candidate.endDate)),
       tooCloseToClose: isInsideFinalEntryWindow(candidate.endDate, this.config.finalEntryBufferSeconds),
       lossCause: lossCauseForReasons(reasons),
+      totalLatencyMs: round(totalLatencyMs),
+      latencyPenaltyUsd: opportunity.latencyPenaltyUsd,
+      latencyAdjustedPnlUsd: round((opportunity.realEdge ?? opportunity.edge) * Math.min(yesFill.filledShares, noFill.filledShares)),
       createdAt: new Date().toISOString()
     };
     this.store.addDiagnostic(diagnostic);
@@ -232,7 +249,8 @@ export class NetArbitrageScanner {
     noFill: FillSimulation,
     maxAgeMs: number,
     pairSpread: number,
-    intendedCapitalUsd: number
+    intendedCapitalUsd: number,
+    totalLatencyMs: number
   ): string[] {
     const reasons: string[] = [];
     const maxAge = Math.min(this.config.maxDataAgeMs, this.config.maxStaleDataMs);
@@ -241,6 +259,12 @@ export class NetArbitrageScanner {
       reasons.push(`Market is inside final ${this.config.finalEntryBufferSeconds}s entry buffer.`);
     }
     if ((opportunity.edge ?? 0) < this.config.minNetArbEdge) reasons.push("Net edge is below MIN_NET_ARB_EDGE after costs.");
+    if ((opportunity.realEdge ?? opportunity.edge ?? 0) < this.config.minRealEdge) {
+      reasons.push("Real edge is below MIN_REAL_EDGE after latency penalty.");
+    }
+    if (totalLatencyMs > this.config.maxTotalLatencyMs) {
+      reasons.push(`Total latency ${Math.round(totalLatencyMs)}ms exceeds MAX_TOTAL_LATENCY_MS.`);
+    }
     if (pairSpread > this.config.maxSpread) reasons.push("YES/NO combined spread exceeds MAX_SPREAD.");
     const requiredDepthUsd = Math.max(this.config.minOrderBookDepthUsd, intendedCapitalUsd * this.config.minDepthMultiplier);
     if (Math.min(yesFill.depthUsd, noFill.depthUsd) < requiredDepthUsd) {

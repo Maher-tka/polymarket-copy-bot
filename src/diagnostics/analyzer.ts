@@ -71,6 +71,7 @@ export function buildLosingDiagnostics(input: {
     const winsForStrategy = completed.filter((trade) => tradePnl(trade) > 0).length;
     const netPnlUsd = strategyTrades.reduce((total, trade) => total + tradePnl(trade), 0);
     const averageActual = average(strategyTrades.map((trade) => trade.actualEdge ?? actualEdge(trade)));
+    const expectancy = expectancyStats(strategyTrades, strategyDiagnostics);
     return {
       strategy,
       label: STRATEGY_LABELS[strategy],
@@ -80,15 +81,26 @@ export function buildLosingDiagnostics(input: {
       winRate: completed.length > 0 ? round(winsForStrategy / completed.length) : 0,
       averageNetEdge: round(average(strategyDiagnostics.map((item) => item.netEdge))),
       averageActualEdge: round(averageActual),
+      netProfitPerTrade: expectancy.netProfitPerTrade,
+      profitFactor: expectancy.profitFactor,
+      expectancyPerTrade: expectancy.expectancyPerTrade,
+      maxDrawdownUsd: expectancy.maxDrawdownUsd,
+      latencyAdjustedPnlUsd: expectancy.latencyAdjustedPnlUsd,
+      misleadingWinRateWarning: expectancy.misleadingWinRateWarning,
       status: strategyStatus({
         trades: strategyTrades.length,
         signals: strategySignals,
         netPnlUsd,
         averageActualEdge: averageActual,
-        winRate: completed.length > 0 ? winsForStrategy / completed.length : 0
+        winRate: completed.length > 0 ? winsForStrategy / completed.length : 0,
+        expectancyPerTrade: expectancy.expectancyPerTrade,
+        profitFactor: expectancy.profitFactor,
+        latencyAdjustedPnlUsd: expectancy.latencyAdjustedPnlUsd
       })
     };
-  }).sort((a, b) => b.netPnlUsd - a.netPnlUsd);
+  }).sort((a, b) => b.expectancyPerTrade - a.expectancyPerTrade || b.netPnlUsd - a.netPnlUsd);
+  const overallExpectancy = expectancyStats(trades, diagnostics);
+  const staleDataCount = diagnostics.filter((item) => item.dataAgeMs !== undefined && item.dataAgeMs > 1000).length;
 
   return {
     totalSignals: Math.max(diagnostics.length, rejections.length + trades.length),
@@ -120,6 +132,17 @@ export function buildLosingDiagnostics(input: {
     averageEdge: round(average([...diagnostics.map((item) => item.netEdge), ...trades.map((trade) => trade.edge)])),
     averageActualEdge: round(average(trades.map((trade) => trade.actualEdge ?? actualEdge(trade)))),
     averageDepthUsd: round(average(diagnostics.map((item) => item.orderBookDepthUsd))),
+    netProfitPerTrade: overallExpectancy.netProfitPerTrade,
+    averageWin: overallExpectancy.averageWin,
+    averageLoss: overallExpectancy.averageLoss,
+    profitFactor: overallExpectancy.profitFactor,
+    expectancyPerTrade: overallExpectancy.expectancyPerTrade,
+    latencyAdjustedPnlUsd: overallExpectancy.latencyAdjustedPnlUsd,
+    latencyAverageMs: round(average(diagnostics.map((item) => item.totalLatencyMs))),
+    latencyP95Ms: round(percentile(diagnostics.map((item) => item.totalLatencyMs), 0.95)),
+    staleDataCount,
+    staleDataPct: diagnostics.length > 0 ? round(staleDataCount / diagnostics.length) : 0,
+    misleadingWinRateWarning: overallExpectancy.misleadingWinRateWarning,
     worstTrade: sortedTrades[0],
     bestTrade: sortedTrades[sortedTrades.length - 1],
     mostProfitableStrategy: sortedStrategies[0]?.[1] !== 0 ? sortedStrategies[0]?.[0] : undefined,
@@ -134,8 +157,17 @@ function strategyStatus(input: {
   netPnlUsd: number;
   averageActualEdge: number;
   winRate: number;
+  expectancyPerTrade: number;
+  profitFactor: number;
+  latencyAdjustedPnlUsd: number;
 }) {
-  const profitable = input.netPnlUsd > 0 && input.averageActualEdge > 0 && input.winRate >= TARGET_WIN_RATE;
+  const profitable =
+    input.netPnlUsd > 0 &&
+    input.averageActualEdge > 0 &&
+    input.winRate >= TARGET_WIN_RATE &&
+    input.expectancyPerTrade > 0 &&
+    input.profitFactor > 1.5 &&
+    input.latencyAdjustedPnlUsd > 0;
   if (input.trades >= REAL_LOCKED_MIN_TRADES || input.signals >= REAL_LOCKED_MIN_SIGNALS) {
     return profitable ? ("real-locked-positive" as const) : ("losing" as const);
   }
@@ -177,6 +209,55 @@ function average(values: Array<number | undefined>): number {
   return finite.length === 0 ? 0 : finite.reduce((total, value) => total + value, 0) / finite.length;
 }
 
+function percentile(values: Array<number | undefined>, p: number): number {
+  const finite = values.filter((value): value is number => Number.isFinite(value)).sort((a, b) => a - b);
+  if (finite.length === 0) return 0;
+  const index = Math.min(finite.length - 1, Math.ceil(finite.length * p) - 1);
+  return finite[index];
+}
+
+function expectancyStats(trades: StrategyPaperTrade[], diagnostics: StrategyDiagnosticRecord[]) {
+  const pnls = trades.map(tradePnl);
+  const wins = pnls.filter((pnl) => pnl > 0);
+  const losses = pnls.filter((pnl) => pnl < 0);
+  const grossProfit = wins.reduce((total, pnl) => total + pnl, 0);
+  const grossLoss = Math.abs(losses.reduce((total, pnl) => total + pnl, 0));
+  const netPnl = pnls.reduce((total, pnl) => total + pnl, 0);
+  const winRate = trades.length > 0 ? wins.length / trades.length : 0;
+  const averageWin = wins.length > 0 ? grossProfit / wins.length : 0;
+  const averageLoss = losses.length > 0 ? grossLoss / losses.length : 0;
+  const netProfitPerTrade = trades.length > 0 ? netPnl / trades.length : 0;
+  const latencyPenalty = diagnostics.reduce((total, item) => total + (item.latencyPenaltyUsd ?? 0), 0);
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Number.POSITIVE_INFINITY : 0;
+  const warning =
+    winRate >= 0.9 && netProfitPerTrade <= 0.01
+      ? "High win rate is misleading: net profit per trade is too small."
+      : undefined;
+  return {
+    netProfitPerTrade: round(netProfitPerTrade),
+    averageWin: round(averageWin),
+    averageLoss: round(averageLoss),
+    profitFactor: round(profitFactor),
+    expectancyPerTrade: round(winRate * averageWin - (1 - winRate) * averageLoss),
+    maxDrawdownUsd: round(maxDrawdown(pnls)),
+    latencyAdjustedPnlUsd: round(netPnl - latencyPenalty),
+    misleadingWinRateWarning: warning
+  };
+}
+
+function maxDrawdown(pnls: number[]): number {
+  let equity = 0;
+  let peak = 0;
+  let drawdown = 0;
+  for (const pnl of pnls) {
+    equity += pnl;
+    peak = Math.max(peak, equity);
+    drawdown = Math.max(drawdown, peak - equity);
+  }
+  return drawdown;
+}
+
 function round(value: number): number {
+  if (!Number.isFinite(value)) return value;
   return Math.round(value * 10000) / 10000;
 }

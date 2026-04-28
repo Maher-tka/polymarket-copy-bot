@@ -9,6 +9,15 @@ export type StrategyName =
   | "btc-momentum-filter"
   | "whale-tracker";
 export type StrategyStatus = "accepted" | "rejected" | "filled" | "partial" | "missed" | "cancelled" | "alert";
+export type MarketEventType =
+  | "whale-trade"
+  | "spread-widened"
+  | "spread-tightened"
+  | "liquidity-drop"
+  | "price-jump"
+  | "freshness-restored"
+  | "freshness-lost"
+  | "copy-signal";
 export type LossCause =
   | "fees"
   | "slippage"
@@ -101,6 +110,19 @@ export interface BotConfig {
   cryptoTakerFeeRate: number;
   makerFeeRate: number;
   makerFailedFillRiskBps: number;
+  dashboardHost: string;
+  maxTotalLatencyMs: number;
+  latencyPenaltyBpsPerSecond: number;
+  minRealEdge: number;
+  minSignalScore: number;
+  highRiskConfirmationCount: number;
+  maxSignalsPerMinute: number;
+  maxTradesPerMinute: number;
+  maxActiveMarkets: number;
+  lossCooldownSeconds: number;
+  minCopyTradeUsd: number;
+  misleadingWinRateMinWinRate: number;
+  misleadingWinRateMaxProfitPerTrade: number;
   recorderEnabled: boolean;
   backtestMode: boolean;
   paperAutoSettleSeconds: number;
@@ -287,6 +309,11 @@ export interface CopySignal {
   sourceTradeId: string;
   simulated?: boolean;
   simulationNote?: string;
+  detectedAt?: string;
+  signalScore?: number;
+  confirmations?: string[];
+  realEdge?: number;
+  latency?: LatencyMetrics;
 }
 
 export interface FilterDecision {
@@ -356,6 +383,14 @@ export interface SkippedTrade {
   signal?: CopySignal;
 }
 
+export interface LatencyMetrics {
+  dataAgeMs: number;
+  signalDetectionLatencyMs: number;
+  decisionLatencyMs: number;
+  simulatedExecutionLatencyMs: number;
+  totalLatencyMs: number;
+}
+
 export interface PortfolioSnapshot {
   mode: TradingMode;
   balanceUsd: number;
@@ -398,6 +433,10 @@ export interface FillSimulation {
   slippageUsd: number;
   slippagePct: number;
   feeUsd: number;
+  spreadCostUsd: number;
+  staleDataPenaltyUsd: number;
+  queueUncertaintyUsd: number;
+  adverseSelectionUsd: number;
   partial: boolean;
   depthUsd: number;
 }
@@ -428,8 +467,12 @@ export interface StrategyOpportunity {
   estimatedTakerFees?: number;
   estimatedSlippage?: number;
   netCost?: number;
+  realEdge?: number;
+  latencyPenaltyUsd?: number;
   edge: number;
   score?: number;
+  signalScore?: number;
+  confirmations?: string[];
   targetShares?: number;
   targetNotionalUsd?: number;
   depthUsd?: number;
@@ -438,6 +481,8 @@ export interface StrategyOpportunity {
   createdAt: string;
   expiresAt?: string;
   latencyMs?: number;
+  totalLatencyMs?: number;
+  dataAgeMs?: number;
   marketEndDate?: string;
   secondsToClose?: number;
   projectedLockedProfitUsd?: number;
@@ -522,6 +567,19 @@ export interface StrategyDiagnosticRecord {
   lossCause?: LossCause;
   missedFill?: boolean;
   reasonForLoss?: string;
+  signalDetectedAt?: string;
+  decisionStartedAt?: string;
+  decisionCompletedAt?: string;
+  simulatedExecutionAt?: string;
+  signalDetectionLatencyMs?: number;
+  decisionLatencyMs?: number;
+  simulatedExecutionLatencyMs?: number;
+  totalLatencyMs?: number;
+  latencyPenaltyUsd?: number;
+  latencyAdjustedPnlUsd?: number;
+  realEdge?: number;
+  signalScore?: number;
+  confirmations?: string[];
   createdAt: string;
 }
 
@@ -556,6 +614,18 @@ export interface StrategyMetrics {
   fillRate: number;
   averageEdge: number;
   averageActualEdge: number;
+  netProfitPerTrade: number;
+  averageWin: number;
+  averageLoss: number;
+  profitFactor: number;
+  expectancyPerTrade: number;
+  realizedPnlUsd: number;
+  unrealizedPnlUsd: number;
+  feesSlippageAdjustedPnlUsd: number;
+  latencyAdjustedPnlUsd: number;
+  latencyAverageMs: number;
+  latencyP95Ms: number;
+  misleadingWinRateWarning?: string;
   averageSlippage: number;
   rejectedCount: number;
   acceptedCount: number;
@@ -593,6 +663,17 @@ export interface LosingDiagnosticsSummary {
   averageEdge: number;
   averageActualEdge: number;
   averageDepthUsd: number;
+  netProfitPerTrade: number;
+  averageWin: number;
+  averageLoss: number;
+  profitFactor: number;
+  expectancyPerTrade: number;
+  latencyAdjustedPnlUsd: number;
+  latencyAverageMs: number;
+  latencyP95Ms: number;
+  staleDataCount: number;
+  staleDataPct: number;
+  misleadingWinRateWarning?: string;
   worstTrade?: StrategyPaperTrade;
   bestTrade?: StrategyPaperTrade;
   mostProfitableStrategy?: StrategyName;
@@ -606,8 +687,28 @@ export interface LosingDiagnosticsSummary {
     winRate: number;
     averageNetEdge: number;
     averageActualEdge: number;
+    netProfitPerTrade: number;
+    profitFactor: number;
+    expectancyPerTrade: number;
+    maxDrawdownUsd: number;
+    latencyAdjustedPnlUsd: number;
+    misleadingWinRateWarning?: string;
     status: "real-locked-positive" | "paper-candidate" | "needs-more-data" | "losing";
   }>;
+}
+
+export interface MarketEvent {
+  id: string;
+  type: MarketEventType;
+  priority: number;
+  timestamp: string;
+  conditionId?: string;
+  tokenId?: string;
+  marketTitle?: string;
+  reason: string;
+  dataAgeMs?: number;
+  spread?: number;
+  liquidityUsd?: number;
 }
 
 export interface PaperLearningAdjustment {
@@ -643,6 +744,7 @@ export interface StrategyEngineState {
   losingDiagnostics: LosingDiagnosticsSummary;
   makerOrders: SimulatedMakerOrder[];
   metrics: StrategyMetrics[];
+  marketEvents: MarketEvent[];
   learning?: PaperLearningState;
   recorder: {
     enabled: boolean;

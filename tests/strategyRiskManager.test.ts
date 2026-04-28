@@ -74,10 +74,21 @@ const state: StrategyEngineState = {
     averageEdge: 0,
     averageActualEdge: 0,
     averageDepthUsd: 0,
+    netProfitPerTrade: 0,
+    averageWin: 0,
+    averageLoss: 0,
+    profitFactor: 0,
+    expectancyPerTrade: 0,
+    latencyAdjustedPnlUsd: 0,
+    latencyAverageMs: 0,
+    latencyP95Ms: 0,
+    staleDataCount: 0,
+    staleDataPct: 0,
     strategyRanking: []
   },
   makerOrders: [],
   metrics: [],
+  marketEvents: [],
   recorder: { enabled: true, snapshotsRecorded: 0, path: "data/orderBookSnapshot.jsonl" },
   backtest: { enabled: false, availableSnapshots: 0 }
 };

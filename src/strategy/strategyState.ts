@@ -111,6 +111,7 @@ export class StrategyStateStore {
       }),
       makerOrders: [...this.makerOrders],
       metrics: STRATEGIES.map((strategy) => calculateMetrics(strategy, this.paperTrades, this.rejectedSignals, this.makerOrders)),
+      marketEvents: [],
       recorder: {
         enabled: this.options.recorderEnabled,
         snapshotsRecorded: recorder.snapshotsRecorded,
@@ -163,9 +164,21 @@ function calculateMetrics(
   const completed = trades.filter((trade) => trade.closedAt || trade.realizedPnlUsd !== 0);
   const wins = completed.filter((trade) => trade.realizedPnlUsd + trade.unrealizedPnlUsd > 0).length;
   const acceptedCount = trades.length;
+  const pnlValues = trades.map((trade) => trade.realizedPnlUsd + trade.unrealizedPnlUsd);
+  const winPnl = pnlValues.filter((pnl) => pnl > 0);
+  const lossPnl = pnlValues.filter((pnl) => pnl < 0);
+  const grossProfit = winPnl.reduce((total, pnl) => total + pnl, 0);
+  const grossLoss = Math.abs(lossPnl.reduce((total, pnl) => total + pnl, 0));
+  const totalPnl = pnlValues.reduce((total, pnl) => total + pnl, 0);
+  const netProfitPerTrade = trades.length > 0 ? totalPnl / trades.length : 0;
+  const winRate = completed.length > 0 ? wins / completed.length : 0;
+  const averageWin = winPnl.length > 0 ? grossProfit / winPnl.length : 0;
+  const averageLoss = lossPnl.length > 0 ? grossLoss / lossPnl.length : 0;
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Number.POSITIVE_INFINITY : 0;
+  const expectancyPerTrade = winRate * averageWin - (1 - winRate) * averageLoss;
+  const feesSlippage = trades.reduce((total, trade) => total + trade.feesUsd + trade.slippageUsd, 0);
   const fillRate = average(trades.map((trade) => trade.fillRate));
   const failedFillCount = trades.filter((trade) => trade.fillRate < 1).length;
-  const totalPnl = trades.reduce((total, trade) => total + trade.realizedPnlUsd + trade.unrealizedPnlUsd, 0);
   const makerFilled = orders.filter((order) => order.status === "filled" || order.status === "hedged").length;
   const missed =
     trades.filter((trade) => trade.status === "missed").length +
@@ -174,11 +187,26 @@ function calculateMetrics(
   return {
     strategy,
     simulatedPnlUsd: round(totalPnl),
-    winRate: completed.length > 0 ? round(wins / completed.length) : 0,
+    winRate: round(winRate),
     maxDrawdownUsd: round(maxDrawdown(trades)),
     fillRate: round(fillRate),
     averageEdge: round(average(trades.map((trade) => trade.edge))),
     averageActualEdge: round(average(trades.map((trade) => trade.actualEdge ?? actualEdge(trade)))),
+    netProfitPerTrade: round(netProfitPerTrade),
+    averageWin: round(averageWin),
+    averageLoss: round(averageLoss),
+    profitFactor: round(profitFactor),
+    expectancyPerTrade: round(expectancyPerTrade),
+    realizedPnlUsd: round(trades.reduce((total, trade) => total + trade.realizedPnlUsd, 0)),
+    unrealizedPnlUsd: round(trades.reduce((total, trade) => total + trade.unrealizedPnlUsd, 0)),
+    feesSlippageAdjustedPnlUsd: round(totalPnl - feesSlippage),
+    latencyAdjustedPnlUsd: round(totalPnl),
+    latencyAverageMs: 0,
+    latencyP95Ms: 0,
+    misleadingWinRateWarning:
+      winRate >= 0.9 && netProfitPerTrade <= 0.01
+        ? "High win rate is misleading: net profit per trade is too small."
+        : undefined,
     averageSlippage: round(average(trades.map((trade) => trade.slippageUsd))),
     rejectedCount: rejections.length,
     acceptedCount,

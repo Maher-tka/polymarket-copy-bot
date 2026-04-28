@@ -29,6 +29,10 @@ function fill(price: number, shares: number, feeRate = 0): FillSimulation {
     slippageUsd: 0,
     slippagePct: 0,
     feeUsd: price * shares * feeRate,
+    spreadCostUsd: 0,
+    staleDataPenaltyUsd: 0,
+    queueUncertaintyUsd: 0,
+    adverseSelectionUsd: 0,
     partial: false,
     depthUsd: price * shares * 10
   };
