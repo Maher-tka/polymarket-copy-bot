@@ -1,3 +1,4 @@
+import { Pause, Play, RotateCw, Square } from "lucide-react";
 import { useState } from "react";
 
 import { botAction } from "../api";
@@ -16,12 +17,11 @@ export default function BotControls({ onRefresh }) {
   }
 
   return (
-    <section className="panel controls">
-      <button onClick={() => run("start")}>Start</button>
-      <button onClick={() => run("pause")}>Pause</button>
-      <button onClick={() => run("stop")}>Stop</button>
-      <button onClick={() => run("demo-tick")}>Demo Tick</button>
-      <button className="dangerButton" onClick={() => run("emergency-stop")}>Emergency Stop</button>
+    <section className="controls">
+      <button onClick={() => run("start")} title="Start bot"><Play size={16} /> Start</button>
+      <button onClick={() => run("pause")} title="Pause bot"><Pause size={16} /> Pause</button>
+      <button onClick={() => run("stop")} title="Stop bot"><Square size={16} /> Stop</button>
+      <button onClick={() => run("demo-tick")} title="Run a paper demo tick"><RotateCw size={16} /> Demo Tick</button>
       {error ? <span className="controlError">{error}</span> : null}
     </section>
   );

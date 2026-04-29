@@ -91,6 +91,7 @@ class BotEngine:
                 "edge": decision.expected_edge,
                 "risk_ok": risk.accepted,
                 "reasons": decision.reasons + risk.reasons,
+                "components": decision.components,
             },
         )
         self.state.state.last_decisions = self.state.state.last_decisions[:100]

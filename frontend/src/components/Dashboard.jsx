@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import BotControls from "./BotControls.jsx";
 import LogsPanel from "./LogsPanel.jsx";
 import MarketTable from "./MarketTable.jsx";
@@ -6,53 +8,107 @@ import PnlChart from "./PnlChart.jsx";
 import PositionsPanel from "./PositionsPanel.jsx";
 import RiskPanel from "./RiskPanel.jsx";
 import SettingsPanel from "./SettingsPanel.jsx";
+import Sidebar from "./Sidebar.jsx";
+import SignalBreakdown from "./SignalBreakdown.jsx";
+import StatCard from "./StatCard.jsx";
+import TopStatusBar from "./TopStatusBar.jsx";
 import TradeHistory from "./TradeHistory.jsx";
 
 export default function Dashboard({ state, onRefresh }) {
-  const modeClass = state.mode === "REAL" ? "real" : "paper";
+  const [activeView, setActiveView] = useState("overview");
+  const positions = state.positions || [];
+  const trades = state.trades || [];
+  const decisions = state.last_decisions || [];
+  const exposure = positions.reduce((total, position) => total + Number(position.cost_basis || 0), 0);
+  const dailyPnl = Number(state.daily_pnl || 0);
+
   return (
-    <main className="screen">
-      <header className="topbar">
-        <div>
-          <h1>Polymarket Trading Bot</h1>
-          <p>Calibration, microstructure, and spread-capture research system</p>
+    <main className="appShell">
+      <Sidebar activeView={activeView} onChange={setActiveView} state={state} />
+      <section className="workspace">
+        <TopStatusBar state={state} onRefresh={onRefresh} />
+
+        <div className="workspaceHeader">
+          <div>
+            <span className="eyebrow">Polymarket research console</span>
+            <h1>{titleFor(activeView)}</h1>
+            <p>Paper-first strategy lab for calibration, orderbook imbalance, and spread capture.</p>
+          </div>
+          <BotControls onRefresh={onRefresh} />
         </div>
-        <div className={`mode ${modeClass}`}>{state.mode}</div>
-        <Metric label="Status" value={state.status} />
-        <Metric label="Balance" value={money(state.balance)} />
-        <Metric label="NAV" value={money(state.nav)} />
-        <Metric label="Daily PnL" value={money(state.daily_pnl)} />
-      </header>
 
-      <BotControls onRefresh={onRefresh} />
+        {state.mode === "REAL" ? (
+          <section className="realModeBanner">
+            REAL mode is enabled. Every order must pass risk checks and runtime confirmation.
+          </section>
+        ) : null}
 
-      <section className="grid two">
-        <RiskPanel state={state} />
-        <PnlChart state={state} />
-      </section>
+        <section className="statGrid">
+          <StatCard label="Net Asset Value" value={money(state.nav)} helper="Fake balance in PAPER mode" />
+          <StatCard label="Cash Balance" value={money(state.balance)} helper="Available buying power" />
+          <StatCard label="Daily PnL" value={money(dailyPnl)} helper="Today only" tone={dailyPnl >= 0 ? "positive" : "negative"} />
+          <StatCard label="Open Exposure" value={money(exposure)} helper={`${positions.length} active position${positions.length === 1 ? "" : "s"}`} />
+        </section>
 
-      <section className="grid two">
-        <MarketTable decisions={state.last_decisions || []} />
-        <OrderbookPanel state={state} />
-      </section>
+        {activeView === "overview" ? (
+          <>
+            <section className="contentGrid primary">
+              <PnlChart state={state} />
+              <RiskPanel state={state} />
+            </section>
+            <section className="contentGrid primary">
+              <SignalBreakdown decisions={decisions} />
+              <MarketTable decisions={decisions} markets={state.markets || []} compact />
+            </section>
+          </>
+        ) : null}
 
-      <section className="grid two">
-        <PositionsPanel positions={state.positions || []} />
-        <TradeHistory trades={state.trades || []} />
-      </section>
+        {activeView === "scanner" ? (
+          <section className="contentGrid scanner">
+            <MarketTable decisions={decisions} markets={state.markets || []} />
+            <div className="stack">
+              <SignalBreakdown decisions={decisions} />
+              <OrderbookPanel state={state} />
+            </div>
+          </section>
+        ) : null}
 
-      <section className="grid two">
-        <LogsPanel logs={state.logs || []} />
-        <SettingsPanel state={state} />
+        {activeView === "risk" ? (
+          <section className="contentGrid primary">
+            <RiskPanel state={state} />
+            <PositionsPanel positions={positions} />
+          </section>
+        ) : null}
+
+        {activeView === "activity" ? (
+          <section className="contentGrid primary">
+            <TradeHistory trades={trades} />
+            <LogsPanel logs={state.logs || []} />
+          </section>
+        ) : null}
+
+        {activeView === "settings" ? (
+          <section className="contentGrid primary">
+            <SettingsPanel state={state} />
+            <OrderbookPanel state={state} />
+          </section>
+        ) : null}
       </section>
     </main>
   );
 }
 
-function Metric({ label, value }) {
-  return <div className="metric"><span>{label}</span><strong>{value}</strong></div>;
-}
-
 function money(value) {
   return `$${Number(value || 0).toFixed(2)}`;
+}
+
+function titleFor(view) {
+  const titles = {
+    overview: "Command Center",
+    scanner: "Market Scanner",
+    risk: "Risk & Exposure",
+    activity: "Trades & Logs",
+    settings: "Settings",
+  };
+  return titles[view] || "Command Center";
 }

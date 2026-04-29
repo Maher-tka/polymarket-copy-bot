@@ -1,20 +1,42 @@
-export default function MarketTable({ decisions }) {
+export default function MarketTable({ decisions, markets = [], compact = false }) {
+  const rows = decisions.length ? decisions : markets.map((market) => ({
+    market_id: market.id,
+    score: 0,
+    edge: 0,
+    decision: "WATCH",
+    risk_ok: true,
+    reasons: [market.question],
+  }));
+
   return (
-    <section className="panel">
-      <h2>Market Signals</h2>
-      <table>
-        <thead><tr><th>Market</th><th>Score</th><th>Edge</th><th>Decision</th></tr></thead>
+    <section className="panel tablePanel">
+      <div className="panelHeader">
+        <h2>Market Scanner</h2>
+        <span>{rows.length} market row{rows.length === 1 ? "" : "s"}</span>
+      </div>
+      <table className={compact ? "compactTable" : ""}>
+        <thead><tr><th>Market</th><th>Score</th><th>Edge</th><th>Decision</th><th>Risk</th></tr></thead>
         <tbody>
-          {decisions.length === 0 ? <tr><td colSpan="4">No decisions yet.</td></tr> : decisions.map((item, index) => (
+          {rows.length === 0 ? <tr><td colSpan="5"><span className="emptyState compact">No market signals yet.</span></td></tr> : rows.map((item, index) => (
             <tr key={`${item.market_id}-${index}`}>
-              <td>{item.market_id}</td>
-              <td>{Number(item.score || 0).toFixed(2)}</td>
+              <td>
+                <strong>{item.market_id}</strong>
+                {!compact && item.reasons?.[0] ? <span>{item.reasons[0]}</span> : null}
+              </td>
+              <td><ScoreBadge value={item.score} /></td>
               <td>{(Number(item.edge || 0) * 100).toFixed(1)}%</td>
-              <td>{item.decision}</td>
+              <td><span className="decisionBadge">{item.decision}</span></td>
+              <td>{item.risk_ok === false ? <span className="riskBad">Blocked</span> : <span className="riskGood">Clear</span>}</td>
             </tr>
           ))}
         </tbody>
       </table>
     </section>
   );
+}
+
+function ScoreBadge({ value }) {
+  const numeric = Number(value || 0);
+  const tone = numeric >= 0.65 ? "high" : numeric >= 0.35 ? "mid" : "low";
+  return <span className={`scoreBadge ${tone}`}>{numeric.toFixed(2)}</span>;
 }
