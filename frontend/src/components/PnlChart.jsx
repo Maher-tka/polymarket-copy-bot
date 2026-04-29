@@ -17,14 +17,14 @@ export default function PnlChart({ state }) {
         <AreaChart data={data}>
           <defs>
             <linearGradient id="navFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#38bdf8" stopOpacity={0.35} />
-              <stop offset="100%" stopColor="#38bdf8" stopOpacity={0.02} />
+              <stop offset="0%" stopColor="#8b6cff" stopOpacity={0.34} />
+              <stop offset="100%" stopColor="#8b6cff" stopOpacity={0.02} />
             </linearGradient>
           </defs>
-          <XAxis dataKey="name" stroke="#9ca3af" />
-          <YAxis stroke="#9ca3af" />
-          <Tooltip contentStyle={{ background: "#0b1220", border: "1px solid #263447", borderRadius: 8 }} />
-          <Area dataKey="nav" stroke="#38bdf8" strokeWidth={2} fill="url(#navFill)" />
+          <XAxis dataKey="name" stroke="#8f8a9d" />
+          <YAxis stroke="#8f8a9d" />
+          <Tooltip contentStyle={{ background: "#111018", border: "1px solid #2b2739", borderRadius: 8 }} />
+          <Area dataKey="nav" stroke="#8b6cff" strokeWidth={2} fill="url(#navFill)" />
         </AreaChart>
       </ResponsiveContainer>
     </section>

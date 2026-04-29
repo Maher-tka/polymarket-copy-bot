@@ -1,4 +1,4 @@
-import { Activity, BarChart3, Gauge, History, Search, Settings, Shield } from "lucide-react";
+import { Activity, BarChart3, Gauge, History, Moon, Search, Settings, Shield } from "lucide-react";
 
 const items = [
   { id: "overview", label: "Overview", icon: BarChart3 },
@@ -43,6 +43,10 @@ export default function Sidebar({ activeView, onChange, state }) {
             <span>Risk state</span>
             <strong>{(state.blocked_reasons || []).length ? "Blocked" : "Clear"}</strong>
           </div>
+        </div>
+        <div className="themeHint">
+          <Moon size={16} />
+          <span>Dark console</span>
         </div>
       </div>
     </aside>

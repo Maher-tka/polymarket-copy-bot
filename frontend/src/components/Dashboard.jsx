@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Activity, BarChart3, Gauge, History, Shield } from "lucide-react";
 
 import BotControls from "./BotControls.jsx";
 import LogsPanel from "./LogsPanel.jsx";
@@ -34,8 +35,8 @@ export default function Dashboard({ state, onRefresh }) {
         <div className="workspaceHeader">
           <div>
             <span className="eyebrow">Polymarket research console</span>
-            <h1>{titleFor(activeView)}</h1>
-            <p>Paper-first strategy lab for calibration, orderbook imbalance, and spread capture.</p>
+            <h1>{activeView === "overview" ? greeting(state.mode) : titleFor(activeView)}</h1>
+            <p>{state.mode} mode · {state.status} · {Number(state.scanned_markets || 0)} markets scanned</p>
           </div>
           <BotControls onRefresh={onRefresh} />
         </div>
@@ -47,18 +48,22 @@ export default function Dashboard({ state, onRefresh }) {
         ) : null}
 
         <section className="statGrid">
-          <StatCard label="Net Asset Value" value={money(state.nav)} helper="Fake balance in PAPER mode" />
-          <StatCard label="Cash Balance" value={money(state.balance)} helper="Available buying power" />
-          <StatCard label="Daily PnL" value={money(dailyPnl)} helper="Today only" tone={dailyPnl >= 0 ? "positive" : "negative"} />
-          <StatCard label="Open Exposure" value={money(exposure)} helper={`${positions.length} active position${positions.length === 1 ? "" : "s"}`} />
-          <StatCard label="Live Cycles" value={Number(state.cycle_count || 0)} helper={`${Number(state.scanned_markets || 0)} markets scanned last cycle`} />
+          <StatCard label="Net Asset Value" value={money(state.nav)} helper="Paper portfolio" icon={<BarChart3 size={17} />} />
+          <StatCard label="Cash Balance" value={money(state.balance)} helper="Buying power" icon={<Activity size={17} />} />
+          <StatCard label="Daily PnL" value={money(dailyPnl)} helper="Mark-to-market" tone={dailyPnl >= 0 ? "positive" : "negative"} icon={<History size={17} />} />
+          <StatCard label="Open Exposure" value={money(exposure)} helper={`${positions.length} active position${positions.length === 1 ? "" : "s"}`} icon={<Shield size={17} />} />
+          <StatCard label="Live Cycles" value={Number(state.cycle_count || 0)} helper={`${Number(state.scanned_markets || 0)} scanned`} icon={<Gauge size={17} />} />
         </section>
 
         {activeView === "overview" ? (
           <>
-            <section className="contentGrid primary">
+            <section className="heroGrid">
+              <PortfolioHero state={state} exposure={exposure} performanceSummary={performanceSummary} />
               <PnlChart state={state} />
+            </section>
+            <section className="contentGrid primary overviewSplit">
               <RiskPanel state={state} />
+              <OrderbookPanel state={state} />
             </section>
             <section className="contentGrid primary">
               <SignalBreakdown decisions={decisions} />
@@ -121,4 +126,26 @@ function titleFor(view) {
     settings: "Settings",
   };
   return titles[view] || "Command Center";
+}
+
+function greeting(mode) {
+  return mode === "REAL" ? "Real Mode Command" : "Welcome back, Paper Lab";
+}
+
+function PortfolioHero({ state, exposure, performanceSummary }) {
+  const dailyPnl = Number(state.daily_pnl || 0);
+  return (
+    <section className="portfolioHero">
+      <div className="heroTopline">
+        <span>Portfolio value</span>
+        <strong className={dailyPnl >= 0 ? "pnlPositive" : "pnlNegative"}>{dailyPnl >= 0 ? "+" : ""}{money(dailyPnl)}</strong>
+      </div>
+      <div className="heroBalance">{money(state.nav)}</div>
+      <div className="heroMeta">
+        <div><span>Cash</span><strong>{money(state.balance)}</strong></div>
+        <div><span>Exposure</span><strong>{money(exposure)}</strong></div>
+        <div><span>Open PnL</span><strong>{money(performanceSummary.open_unrealized_pnl)}</strong></div>
+      </div>
+    </section>
+  );
 }

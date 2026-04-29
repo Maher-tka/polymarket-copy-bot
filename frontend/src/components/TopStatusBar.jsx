@@ -1,4 +1,4 @@
-import { AlertTriangle, Lock, Radio, ShieldAlert } from "lucide-react";
+import { AlertTriangle, Bell, Lock, Radio, Search, ShieldAlert } from "lucide-react";
 import { useState } from "react";
 
 import { botAction } from "../api";
@@ -27,10 +27,18 @@ export default function TopStatusBar({ state, onRefresh }) {
             <strong>{state.mode}</strong>
           </div>
         </div>
+      </div>
+
+      <div className="globalSearch">
+        <Search size={17} />
+        <span>Search markets, signals, trades</span>
+      </div>
+
+      <div className="statusCluster">
         <StatusPill label="Bot" value={state.status} tone={state.status === "RUNNING" ? "good" : "idle"} />
-        <StatusPill label="Market data" value={state.stale_data ? "Stale" : "Ready"} tone={state.stale_data ? "bad" : "good"} />
         <StatusPill label="Loop" value={state.loop_running ? "Active" : "Idle"} tone={state.loop_running ? "good" : "idle"} />
-        <StatusPill label="WebSocket" value={state.websocket_connected ? "Live" : "Waiting"} tone={state.websocket_connected ? "good" : "idle"} icon={<Radio size={15} />} />
+        <StatusPill label="WS" value={state.websocket_connected ? "Live" : "Wait"} tone={state.websocket_connected ? "good" : "idle"} icon={<Radio size={15} />} />
+        <div className="notificationDot" title="Local alerts"><Bell size={17} /></div>
       </div>
 
       {isReal ? (
