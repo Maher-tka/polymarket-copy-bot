@@ -4,6 +4,7 @@ import time
 
 from backend.app.config import Settings
 from backend.app.data.clob_rest import ClobRestClient
+from backend.app.data.clob_ws import ClobMarketWebSocket
 from backend.app.data.external_probability import MockProbabilityProvider
 from backend.app.data.gamma_api import GammaApi
 from backend.app.data.news_feed import NewsFeed
@@ -39,8 +40,10 @@ class BotEngine:
         self.aggregator = SignalAggregator(settings)
         self._loop_task: asyncio.Task | None = None
         self._markets_cache: list[Market] = []
+        self._market_group_by_id: dict[str, str] = {}
         self._last_market_refresh = 0.0
         self._high_water_nav = settings.paper_start_balance
+        self.market_ws = ClobMarketWebSocket(settings.stale_data_seconds, settings.websocket_heartbeat_seconds)
         self.strategies = [
             CalibrationArbitrageStrategy(settings, MockProbabilityProvider()),
             MicrostructureStrategy(settings),
@@ -92,6 +95,8 @@ class BotEngine:
             self._loop_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._loop_task
+        await self.market_ws.stop()
+        self.state.state.websocket_connected = False
 
     async def _paper_market_loop(self) -> None:
         self.state.log("Live PAPER loop started: discovering markets and reading real orderbooks.")
@@ -112,7 +117,6 @@ class BotEngine:
     async def _run_paper_cycle(self) -> None:
         self.state.state.cycle_count += 1
         self.state.state.last_cycle_at = time.time()
-        self.state.state.data_source = "gamma+clob-rest"
         markets = await self._active_markets()
         if not markets:
             self.state.log("No eligible live markets found yet.")
@@ -120,14 +124,19 @@ class BotEngine:
 
         scanned = 0
         fills = 0
+        ws_hits = 0
+        rest_fallbacks = 0
         clob = ClobRestClient(self.settings)
         try:
             for market in markets[: self.settings.market_scan_limit]:
                 if self.state.state.status != "RUNNING":
                     break
                 try:
-                    orderbook = await clob.get_orderbook(market.yes_token_id, market.id)
-                    orderbook.no_token_id = market.no_token_id
+                    orderbook, source = await self._get_orderbook(clob, market)
+                    if source == "websocket":
+                        ws_hits += 1
+                    else:
+                        rest_fallbacks += 1
                 except Exception as exc:
                     self.state.log(f"Orderbook fetch skipped for {market.slug or market.id}: {exc}")
                     continue
@@ -145,13 +154,23 @@ class BotEngine:
             await clob.close()
 
         self.state.state.scanned_markets = scanned
-        self.state.state.stale_data = False
+        self.state.state.rest_fallback_count = rest_fallbacks
+        self.state.state.websocket_connected = self.market_ws.connected
+        self.state.state.websocket_last_message_age_seconds = self._websocket_message_age()
+        self.state.state.websocket_cached_books = len(self.market_ws.orderbooks)
+        self.state.state.data_source = "websocket+rest-recovery" if ws_hits else "gamma+clob-rest"
+        self.state.state.stale_data = scanned == 0
         self._sync_executor_state()
-        self.state.log(f"Cycle {self.state.state.cycle_count}: scanned {scanned} live markets, fills {fills}.")
+        self.state.log(
+            f"Cycle {self.state.state.cycle_count}: scanned {scanned} live markets, fills {fills}, "
+            f"ws {ws_hits}, rest {rest_fallbacks}."
+        )
 
     async def _active_markets(self) -> list[Market]:
         now = time.time()
         if self._markets_cache and now - self._last_market_refresh < self.settings.market_refresh_seconds:
+            self.market_ws.subscribe([market.yes_token_id for market in self._markets_cache[: self.settings.market_scan_limit]])
+            await self.market_ws.start()
             return self._markets_cache
 
         gamma = GammaApi(self.settings)
@@ -161,6 +180,7 @@ class BotEngine:
             await gamma.close()
 
         self._markets_cache = markets
+        self._market_group_by_id = {market.id: market.correlation_group or "uncategorized" for market in markets}
         self._last_market_refresh = now
         self.state.state.markets = [
             {
@@ -171,13 +191,25 @@ class BotEngine:
                 "volume": market.volume,
                 "yes_token_id": market.yes_token_id,
                 "no_token_id": market.no_token_id,
+                "correlation_group": market.correlation_group,
             }
             for market in markets
         ]
         with session_scope() as session:
             MarketRepository(session).upsert_many(markets)
+        self.market_ws.subscribe([market.yes_token_id for market in markets[: self.settings.market_scan_limit]])
+        await self.market_ws.start()
         self.state.log(f"Discovered {len(markets)} eligible live markets.")
         return markets
+
+    async def _get_orderbook(self, clob: ClobRestClient, market: Market) -> tuple[OrderBook, str]:
+        cached = self.market_ws.orderbooks.get(market.yes_token_id)
+        if cached and not self.market_ws.is_stale(market.yes_token_id):
+            cached.no_token_id = market.no_token_id
+            return cached, "websocket"
+        orderbook = await clob.get_orderbook(market.yes_token_id, market.id)
+        orderbook.no_token_id = market.no_token_id
+        return orderbook, "rest"
 
     async def evaluate_market(self, market: Market, orderbook: OrderBook) -> dict:
         signals = []
@@ -188,15 +220,24 @@ class BotEngine:
         decision = self.aggregator.aggregate(market.id, signals)
         exposure_by_market = self._position_exposure_by_market()
         market_exposure = exposure_by_market.get(market.id, 0.0)
-        size_usd = self.position_sizer.size(self.paper_executor.nav, self.paper_executor.cash, market_exposure, decision.expected_edge, orderbook.mid_price or 1.0)
+        adjusted_edge, _edge_costs = self.risk_engine.cost_adjusted_edge(decision, market)
+        size_usd = self.position_sizer.size(
+            self.paper_executor.nav,
+            self.paper_executor.cash,
+            market_exposure,
+            max(0.0, adjusted_edge),
+            orderbook.mid_price or 1.0,
+        )
         risk_state = PortfolioRiskState(
             nav=self.paper_executor.nav,
             cash=self.paper_executor.cash,
             daily_pnl=self.state.state.daily_pnl,
             max_drawdown_pct=self.state.state.max_drawdown_pct,
             exposure_by_market=exposure_by_market,
+            exposure_by_correlation_group=self._position_exposure_by_group(),
         )
         risk = self.risk_engine.evaluate(decision, market, orderbook, risk_state, size_usd)
+        self.state.state.edge_costs_latest = risk.edge_costs
         result = {"decision": decision, "risk": risk, "size_usd": size_usd, "execution": None}
         self.state.state.last_decisions = [
             item for item in self.state.state.last_decisions if item.get("market_id") != market.id
@@ -210,15 +251,19 @@ class BotEngine:
                 "decision": decision.decision.value,
                 "score": decision.final_score,
                 "edge": decision.expected_edge,
+                "adjusted_edge": risk.adjusted_edge,
+                "edge_costs": risk.edge_costs,
                 "risk_ok": risk.accepted,
                 "reasons": decision.reasons + risk.reasons,
                 "components": decision.components,
+                "correlation_group": market.correlation_group,
             },
         )
         self.state.state.last_decisions = self.state.state.last_decisions[:100]
         if risk.accepted and decision.decision in {Decision.BUY_YES, Decision.BUY_NO} and size_usd > 0:
             if self.settings.bot_mode == "PAPER":
                 result["execution"] = await self.paper_executor.execute(decision, market, orderbook, size_usd)
+                self._annotate_execution(result["execution"], decision, market, risk)
                 self._record_paper_trade(result["execution"], decision)
             else:
                 result["execution"] = await self.real_executor.submit_limit_order(decision, market, orderbook, size_usd, risk)
@@ -246,6 +291,9 @@ class BotEngine:
         ]
         self.state.state.trades = list(reversed(self.paper_executor.trades[-100:]))
         self.state.state.blocked_reasons = list(self.circuit_breaker.blocked_reasons)
+        self.state.state.websocket_connected = self.market_ws.connected
+        self.state.state.websocket_last_message_age_seconds = self._websocket_message_age()
+        self.state.state.websocket_cached_books = len(self.market_ws.orderbooks)
         nav = self.paper_executor.nav
         self.state.state.unrealized_pnl = round(nav - self.settings.paper_start_balance, 4)
         self.state.state.daily_pnl = self.state.state.unrealized_pnl
@@ -260,6 +308,30 @@ class BotEngine:
             exposure[market_id] = exposure.get(market_id, 0.0) + value["cost_basis"]
         return exposure
 
+    def _position_exposure_by_group(self) -> dict[str, float]:
+        exposure: dict[str, float] = {}
+        for key, value in self.paper_executor.positions.items():
+            market_id = key.removesuffix(":NO")
+            group = self._market_group_by_id.get(market_id)
+            if not group:
+                continue
+            exposure[group] = exposure.get(group, 0.0) + value["cost_basis"]
+        return exposure
+
+    def _websocket_message_age(self) -> float | None:
+        if not self.market_ws.last_message_at:
+            return None
+        return round(max(0.0, time.time() - self.market_ws.last_message_at), 3)
+
+    def _annotate_execution(self, execution: dict | None, decision, market: Market, risk) -> None:
+        if not execution or not execution.get("trade"):
+            return
+        trade = execution["trade"]
+        trade["signal_source"] = primary_signal(decision.components)
+        trade["adjusted_edge"] = risk.adjusted_edge
+        trade["question"] = market.question
+        trade["correlation_group"] = market.correlation_group
+
     def _record_paper_trade(self, execution: dict | None, decision) -> None:
         if not execution or execution.get("status") not in {"FILLED", "PARTIAL"}:
             return
@@ -273,6 +345,12 @@ class BotEngine:
                     price=trade["avg_price"],
                     size_usd=trade["size_usd"],
                     shares=trade["shares"],
-                    signal_source=",".join(sorted(decision.components.keys())) or "aggregator",
+                    signal_source=trade.get("signal_source") or ",".join(sorted(decision.components.keys())) or "aggregator",
                 )
             )
+
+
+def primary_signal(components: dict[str, float]) -> str:
+    if not components:
+        return "aggregator"
+    return max(components.items(), key=lambda item: abs(item[1]))[0]

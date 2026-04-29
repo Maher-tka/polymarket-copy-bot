@@ -73,9 +73,12 @@ The bot will block trading when:
 - Emergency stop is active
 - Bot is paused
 - WebSocket/orderbook data is stale
+- Expected edge disappears after slippage, fees, resolution fee, and capital lock-up cost
 - Daily loss limit is hit
 - Total drawdown limit is hit
 - Per-market exposure limit is hit
+- Correlated exposure limit is hit
+- Max open markets limit is hit
 - Cash reserve would be violated
 - Market liquidity or volume is too low
 - Spread is too wide
@@ -83,6 +86,18 @@ The bot will block trading when:
 - Signal score or expected edge is too low
 
 All execution is modeled as limit orders. Market-style execution should only be marketable limit orders with strict slippage protection.
+
+## Guide Recommendations Implemented
+
+The local PDF guide recommendations are reflected in these modules:
+
+- WebSocket-first market data with JSON heartbeat and REST recovery: `backend/app/data/clob_ws.py`, `backend/app/core/bot_engine.py`
+- Cost-adjusted edge model: resolution fee, estimated fees, slippage, and time-to-resolution capital lock-up: `backend/app/risk/risk_engine.py`
+- Half-Kelly position sizing capped by trade, market, and cash-reserve limits: `backend/app/risk/position_sizing.py`
+- Correlated market grouping and exposure caps: `backend/app/risk/correlation.py`, `backend/app/risk/risk_engine.py`
+- Signal attribution on every paper trade: `backend/app/core/bot_engine.py`
+
+The bot remains PAPER by default. The guide’s real-money signing examples were not enabled automatically.
 
 ## Folder Structure
 
@@ -202,6 +217,11 @@ MIN_VOLUME=5000
 MAX_ORDER_AGE_SECONDS=30
 STALE_DATA_SECONDS=10
 KELLY_FRACTION=0.50
+RESOLUTION_FEE_PCT=0.02
+ANNUAL_CAPITAL_COST_PCT=0.08
+MAX_OPEN_MARKETS=20
+MAX_CORRELATED_NAV_PCT=0.04
+WEBSOCKET_HEARTBEAT_SECONDS=10
 ```
 
 ## Testing

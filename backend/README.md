@@ -14,3 +14,10 @@ uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 The backend starts in PAPER mode by default and does not require Polymarket private keys.
+
+Implemented guide safeguards:
+
+- WebSocket-first orderbook cache with JSON heartbeat and REST recovery.
+- Cost-adjusted edge checks for resolution fee, fees, slippage, and capital lock-up time.
+- Per-market, max-open-market, and correlated exposure limits.
+- Signal attribution on paper trades for later performance review.

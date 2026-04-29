@@ -11,6 +11,8 @@ export default function SettingsPanel({ state }) {
       <div className="row"><span>Emergency stop</span><strong>Always visible</strong></div>
       <div className="row"><span>Live loop</span><strong>{state.loop_running ? "Active" : "Idle"}</strong></div>
       <div className="row"><span>Data source</span><strong>{state.data_source || "idle"}</strong></div>
+      <div className="row"><span>Edge model</span><strong>Fees + slippage + resolution + time</strong></div>
+      <div className="row"><span>Exposure model</span><strong>Market + correlated group caps</strong></div>
       <p className="muted">News and smart-money are disabled by default.</p>
     </section>
   );

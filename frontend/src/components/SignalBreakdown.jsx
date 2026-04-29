@@ -23,7 +23,17 @@ export default function SignalBreakdown({ decisions }) {
               <span>Expected edge</span>
               <strong>{percent(latest.edge)}</strong>
             </div>
+            <div>
+              <span>After costs</span>
+              <strong>{percent(latest.adjusted_edge)}</strong>
+            </div>
           </div>
+
+          {latest.edge_costs ? (
+            <div className="costStrip">
+              <span>Costs: resolution {percent(latest.edge_costs.resolution_fee)}, slippage {percent(latest.edge_costs.slippage)}, capital {percent(latest.edge_costs.capital_lockup)}</span>
+            </div>
+          ) : null}
 
           <div className="scoreRows">
             {entries.length === 0 ? (

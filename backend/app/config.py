@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     order_cooldown_seconds: int = 10
     estimated_fee_bps: float = 0.0
     slippage_bps: float = 20.0
+    resolution_fee_pct: float = 0.02
+    annual_capital_cost_pct: float = 0.08
+    max_open_markets: int = 20
+    max_correlated_nav_pct: float = 0.04
+    websocket_heartbeat_seconds: int = 10
     paper_loop_interval_seconds: int = 15
     market_refresh_seconds: int = 300
     market_discovery_limit: int = 60

@@ -57,6 +57,34 @@ def test_risk_engine_blocks_core_risk_limits():
     assert "Bid/ask spread is above MAX_SPREAD_CENTS." in result.reasons
 
 
+def test_risk_engine_blocks_when_edge_disappears_after_costs():
+    settings = Settings(_env_file=None)
+
+    result = RiskEngine(settings).evaluate(decision(edge=0.06), market(), orderbook(), portfolio(), 10)
+
+    assert result.accepted is False
+    assert result.adjusted_edge < settings.min_expected_edge
+    assert "Cost-adjusted edge is below minimum after fees, slippage, and capital lock-up." in result.reasons
+
+
+def test_risk_engine_blocks_max_open_markets_and_correlated_exposure():
+    settings = Settings(_env_file=None, max_open_markets=1, max_correlated_nav_pct=0.03)
+    risk = RiskEngine(settings)
+
+    too_many_markets = portfolio(exposure_by_market={"other": 10})
+    result = risk.evaluate(decision(), market("m2"), orderbook(), too_many_markets, 10)
+    assert result.accepted is False
+    assert "Max open markets limit hit." in result.reasons
+
+    correlated = portfolio(
+        exposure_by_market={"other": 10},
+        exposure_by_correlation_group={"same-driver": 25},
+    )
+    result = risk.evaluate(decision(), market("m2", group="same-driver"), orderbook(), correlated, 10)
+    assert result.accepted is False
+    assert "Correlated exposure limit hit." in result.reasons
+
+
 def test_real_mode_keeps_stricter_score_threshold():
     settings = Settings(
         _env_file=None,
@@ -93,8 +121,8 @@ def decision(score=0.8, edge=0.08):
     return AggregatedDecision("m1", Decision.BUY_YES, score, edge, [], {"calibration_arbitrage": 0.4})
 
 
-def market(liquidity=5000, volume=10000):
-    return Market("m1", "Will test pass?", "test", "yes", "no", liquidity, volume, time.time() + 3600)
+def market(market_id="m1", liquidity=5000, volume=10000, group=None):
+    return Market(market_id, "Will test pass?", "test", "yes", "no", liquidity, volume, time.time() + 3600, correlation_group=group)
 
 
 def orderbook(updated_at=None, bid=0.48, ask=0.50):
@@ -107,11 +135,12 @@ def orderbook(updated_at=None, bid=0.48, ask=0.50):
     )
 
 
-def portfolio(nav=1000, cash=1000, daily_pnl=0, max_drawdown_pct=0, exposure_by_market=None):
+def portfolio(nav=1000, cash=1000, daily_pnl=0, max_drawdown_pct=0, exposure_by_market=None, exposure_by_correlation_group=None):
     return PortfolioRiskState(
         nav=nav,
         cash=cash,
         daily_pnl=daily_pnl,
         max_drawdown_pct=max_drawdown_pct,
         exposure_by_market=exposure_by_market or {},
+        exposure_by_correlation_group=exposure_by_correlation_group or {},
     )

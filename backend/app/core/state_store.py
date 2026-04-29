@@ -20,13 +20,17 @@ class RuntimeState:
     logs: deque[str] = field(default_factory=lambda: deque(maxlen=200))
     last_decisions: list[dict] = field(default_factory=list)
     websocket_connected: bool = False
+    websocket_last_message_age_seconds: float | None = None
+    websocket_cached_books: int = 0
     stale_data: bool = False
     loop_running: bool = False
     cycle_count: int = 0
     scanned_markets: int = 0
+    rest_fallback_count: int = 0
     last_cycle_at: float | None = None
     last_error: str | None = None
     data_source: str = "idle"
+    edge_costs_latest: dict = field(default_factory=dict)
 
 
 class StateStore:

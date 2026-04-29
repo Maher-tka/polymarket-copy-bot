@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import time
 from collections.abc import Awaitable, Callable
@@ -12,17 +13,22 @@ MARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
 
 class ClobMarketWebSocket:
-    def __init__(self, stale_data_seconds: int) -> None:
+    def __init__(self, stale_data_seconds: int, heartbeat_seconds: int = 10) -> None:
         self.stale_data_seconds = stale_data_seconds
+        self.heartbeat_seconds = heartbeat_seconds
         self.orderbooks: dict[str, OrderBook] = {}
         self.token_ids: set[str] = set()
         self.connected = False
         self.last_message_at = 0.0
         self.last_stale_reason = "not_connected"
         self._task: asyncio.Task | None = None
+        self._subscription_version = 0
 
     def subscribe(self, token_ids: list[str]) -> None:
+        before = len(self.token_ids)
         self.token_ids.update(x for x in token_ids if x)
+        if len(self.token_ids) != before:
+            self._subscription_version += 1
 
     async def start(self, on_update: Callable[[OrderBook], Awaitable[None]] | None = None) -> None:
         if self._task and not self._task.done():
@@ -32,6 +38,9 @@ class ClobMarketWebSocket:
     async def stop(self) -> None:
         if self._task:
             self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+        self.connected = False
 
     def is_stale(self, token_id: str) -> bool:
         book = self.orderbooks.get(token_id)
@@ -52,16 +61,36 @@ class ClobMarketWebSocket:
                 async with websockets.connect(MARKET_WS_URL, ping_interval=10, ping_timeout=10) as ws:
                     self.connected = True
                     self.last_stale_reason = ""
-                    if self.token_ids:
-                        await ws.send(json.dumps({"type": "market", "assets_ids": list(self.token_ids), "custom_feature_enabled": True}))
-                    async for message in ws:
-                        if message == "PONG":
-                            continue
-                        self.last_message_at = time.time()
-                        for book in parse_market_message(message):
-                            self.orderbooks[book.yes_token_id] = book
-                            if on_update:
-                                await on_update(book)
+                    sent_subscription_version = -1
+                    heartbeat_task = asyncio.create_task(self._heartbeat(ws))
+                    try:
+                        while True:
+                            if self.token_ids and sent_subscription_version != self._subscription_version:
+                                await ws.send(
+                                    json.dumps(
+                                        {
+                                            "type": "market",
+                                            "assets_ids": sorted(self.token_ids),
+                                            "custom_feature_enabled": True,
+                                        }
+                                    )
+                                )
+                                sent_subscription_version = self._subscription_version
+                            try:
+                                message = await asyncio.wait_for(ws.recv(), timeout=1)
+                            except TimeoutError:
+                                continue
+                            if message == "PONG":
+                                continue
+                            self.last_message_at = time.time()
+                            for book in parse_market_message(message):
+                                self.orderbooks[book.yes_token_id] = book
+                                if on_update:
+                                    await on_update(book)
+                    finally:
+                        heartbeat_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await heartbeat_task
                     self.connected = False
                     self.last_stale_reason = "websocket_closed"
             except asyncio.CancelledError:
@@ -71,6 +100,11 @@ class ClobMarketWebSocket:
                 self.last_stale_reason = str(exc)
                 logger.warning("CLOB market websocket reconnecting after error: %s", exc)
                 await asyncio.sleep(2)
+
+    async def _heartbeat(self, ws) -> None:
+        while True:
+            await asyncio.sleep(self.heartbeat_seconds)
+            await ws.send(json.dumps({"type": "ping"}))
 
 
 def parse_market_message(message: str) -> list[OrderBook]:

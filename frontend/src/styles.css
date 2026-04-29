@@ -484,7 +484,7 @@ td span {
 
 .signalHero {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.65rem;
   margin-bottom: 0.9rem;
 }
@@ -508,6 +508,16 @@ td span {
   display: block;
   margin-top: 0.2rem;
   font-size: 1rem;
+}
+
+.costStrip {
+  border: 1px solid #2a3340;
+  border-radius: 8px;
+  color: #aeb8c7;
+  background: #10141b;
+  padding: 0.62rem 0.75rem;
+  margin: -0.15rem 0 0.9rem;
+  font-size: 0.82rem;
 }
 
 .scoreRows {

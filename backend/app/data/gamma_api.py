@@ -3,6 +3,7 @@ import time
 import httpx
 
 from backend.app.config import Settings
+from backend.app.risk.correlation import infer_correlation_group
 from backend.app.strategy.signal_types import Market
 
 
@@ -36,6 +37,10 @@ class GammaApi:
                 volume=float(item.get("volumeNum") or item.get("volume") or item.get("volume24hr") or 0),
                 end_ts=end_ts,
                 active=item.get("active") is not False,
+                correlation_group=infer_correlation_group(
+                    item.get("question") or item.get("title") or item["conditionId"],
+                    item.get("slug"),
+                ),
             )
             if market.liquidity >= self.settings.min_liquidity and market.volume >= self.settings.min_volume:
                 if market.end_ts and market.end_ts - time.time() < self.settings.market_close_buffer_minutes * 60:
