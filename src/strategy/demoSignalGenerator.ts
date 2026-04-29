@@ -159,7 +159,7 @@ export class DemoSignalGenerator {
       .filter((market) => Number(market.volumeNum ?? market.volume ?? 0) >= this.config.minMarketVolumeUsd)
       .map((market) => ({
         market,
-        tokenIds: parseJsonArray(market.clobTokenIds),
+        tokenIds: parseLosslessTokenIdArray(market.clobTokenIds),
         outcomes: parseJsonArray(market.outcomes)
       }))
       .filter((candidate) => Boolean(candidate.market.conditionId && candidate.market.slug && candidate.tokenIds.length > 0));
@@ -219,6 +219,22 @@ function parseJsonArray(value: string | undefined): string[] {
       .map((item) => item.replace(/[[\]"']/g, "").trim())
       .filter(Boolean);
   }
+}
+
+function parseLosslessTokenIdArray(value: string | undefined): string[] {
+  if (!value) return [];
+  const trimmed = value.trim();
+
+  // Gamma's `clobTokenIds` is often a JSON-encoded array of *numbers*. JSON.parse would coerce
+  // those into JS Numbers and lose precision for very large token IDs, producing invalid
+  // token IDs (and downstream CLOB 404s). Instead, extract the raw digits directly.
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    const matches = [...trimmed.matchAll(/"(\d+)"|(\d+)/g)];
+    const extracted = matches.map((match) => match[1] ?? match[2]).filter(Boolean) as string[];
+    if (extracted.length > 0) return extracted;
+  }
+
+  return parseJsonArray(value);
 }
 
 function round(value: number): number {

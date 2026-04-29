@@ -63,6 +63,12 @@ const config = {
   stopAfterFailedFills: 3,
   stopAfterConsecutiveLosses: 3,
   minNetArbEdge: 0.025,
+  paperTradingOnly: true,
+  paperScoutMode: false,
+  paperScoutMaxNegativeEdge: 0.015,
+  paperScoutMaxSpread: 0.025,
+  paperScoutIntervalSeconds: 60,
+  paperScoutMaxOpenTrades: 1,
   minOrderBookDepthUsd: 25,
   minDepthMultiplier: 5,
   maxStaleDataMs: 500,
@@ -121,6 +127,61 @@ describe("NetArbitrageScanner", () => {
     expect(state.paperTrades).toHaveLength(1);
     expect(state.diagnostics[0].rawEdge).toBeCloseTo(0.05);
     expect(state.diagnostics[0].netEdge).toBeCloseTo(0.05);
+  });
+
+  it("uses the batch orderbook endpoint for scan candidates", async () => {
+    const store = makeStore();
+    let batchCalls = 0;
+    const clob = {
+      getOrderBook: async () => {
+        throw new Error("single orderbook fetch should not be used");
+      },
+      getOrderBooks: async (tokenIds: string[]) => {
+        batchCalls += 1;
+        return new Map(
+          tokenIds.map((tokenId) => [
+            tokenId,
+            tokenId === "yes"
+              ? book("yes", [{ price: "0.45", size: "200" }])
+              : book("no", [{ price: "0.50", size: "200" }])
+          ])
+        );
+      }
+    } as never;
+    const scanner = makeScanner(store, clob, { minOrderBookDepthUsd: 1, minDepthMultiplier: 1, maxSpread: 0.1 });
+
+    await scanner.scan([candidate], portfolio);
+
+    expect(batchCalls).toBe(1);
+    expect(store.getState().paperTrades).toHaveLength(1);
+  });
+
+  it("can take a constrained paper scout trade on a fresh near-miss quote", async () => {
+    const store = makeStore();
+    const scanner = makeScanner(
+      store,
+      fakeClob({
+        yes: book("yes", [{ price: "0.50", size: "200" }], Date.now(), [{ price: "0.495", size: "200" }]),
+        no: book("no", [{ price: "0.51", size: "200" }], Date.now(), [{ price: "0.505", size: "200" }])
+      }),
+      {
+        paperScoutMode: true,
+        paperScoutIntervalSeconds: 0,
+        minOrderBookDepthUsd: 1,
+        minDepthMultiplier: 1,
+        maxSpread: 0.005,
+        paperScoutMaxSpread: 0.025,
+        paperScoutMaxNegativeEdge: 0.02
+      }
+    );
+
+    await scanner.scan([candidate], portfolio);
+
+    const state = store.getState();
+    expect(state.paperTrades).toHaveLength(1);
+    expect(state.paperTrades[0].edge).toBeLessThan(0);
+    expect(state.opportunities[0].reason).toContain("Paper scout mode");
+    expect(state.diagnostics[0].accepted).toBe(true);
   });
 
   it("rejects stale data older than MAX_DATA_AGE_MS", async () => {
@@ -201,17 +262,23 @@ function makeScanner(
 
 function fakeClob(books: Record<string, OrderBook>) {
   return {
-    getOrderBook: async (tokenId: string) => books[tokenId]
+    getOrderBook: async (tokenId: string) => books[tokenId],
+    getOrderBooks: async (tokenIds: string[]) => new Map(tokenIds.map((tokenId) => [tokenId, books[tokenId]]))
   } as never;
 }
 
-function book(assetId: string, asks: Array<{ price: string; size: string }>, timestampMs = Date.now()): OrderBook {
+function book(
+  assetId: string,
+  asks: Array<{ price: string; size: string }>,
+  timestampMs = Date.now(),
+  bids: Array<{ price: string; size: string }> = [{ price: "0.44", size: "100" }]
+): OrderBook {
   return {
     market: "condition",
     asset_id: assetId,
     timestamp: String(timestampMs),
     hash: `${assetId}-hash`,
-    bids: [{ price: "0.44", size: "100" }],
+    bids,
     asks,
     min_order_size: "1",
     tick_size: "0.01",

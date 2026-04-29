@@ -61,6 +61,15 @@ export class LeaderboardService {
         ? sorted
         : sorted.filter((trader) => trader.score >= this.config.minTraderScore);
 
+    if (this.config.watchedWallets.length === 0 && eligible.length === 0 && sorted.length > 0) {
+      logger.warn("No leaderboard traders met MIN_TRADER_SCORE; falling back to top scored traders to avoid idling.", {
+        minTraderScore: this.config.minTraderScore,
+        scored: sorted.length,
+        topScore: sorted[0]?.score
+      });
+      return sorted.slice(0, this.config.maxWatchedTraders);
+    }
+
     return eligible.slice(0, this.config.maxWatchedTraders);
   }
 }

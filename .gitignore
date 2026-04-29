@@ -10,3 +10,4 @@ demo-smoke.*
 .DS_Store
 npm-debug.log*
 *.local
+.codex/

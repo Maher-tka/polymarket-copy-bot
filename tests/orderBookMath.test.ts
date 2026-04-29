@@ -3,6 +3,7 @@ import { GammaMarket, OrderBook } from "../src/types";
 import {
   calculateBinaryTakerFeeUsd,
   isCryptoUpDownMarket,
+  isInsideCandidateFinalEntryWindow,
   isFiveOrFifteenMinuteCryptoMarket,
   isInsideFinalEntryWindow,
   isShortTermCryptoBinaryMarket,
@@ -59,12 +60,38 @@ describe("simulateOrderBookFill", () => {
 });
 
 describe("crypto market helpers", () => {
-  it("detects true crypto Up/Down markets first", () => {
+  it("detects crypto Up/Down markets without treating hourly markets as low latency", () => {
     const market = { question: "Bitcoin Up or Down - April 26, 4PM ET", slug: "bitcoin-up-or-down-april-26-2026-4pm-et" };
 
     expect(isCryptoUpDownMarket(market)).toBe(true);
     expect(isShortTermCryptoBinaryMarket(market)).toBe(true);
-    expect(isFiveOrFifteenMinuteCryptoMarket(market)).toBe(true);
+    expect(isFiveOrFifteenMinuteCryptoMarket(market)).toBe(false);
+  });
+
+  it("detects 5 minute and 15 minute crypto markets for the low-latency universe", () => {
+    expect(
+      isFiveOrFifteenMinuteCryptoMarket({
+        question: "Bitcoin Up or Down - April 29, 10:20AM-10:25AM ET",
+        slug: "btc-updown-5m-1777472400"
+      })
+    ).toBe(true);
+    expect(
+      isFiveOrFifteenMinuteCryptoMarket({
+        question: "Ethereum Up or Down - April 29, 10:15AM-10:30AM ET",
+        slug: "eth-updown-15m-1777472100"
+      })
+    ).toBe(true);
+  });
+
+  it("uses the ET title window to catch short markets entering the close buffer", () => {
+    const candidate = {
+      title: "Bitcoin Up or Down - April 29, 10:30AM-10:35AM ET",
+      slug: "btc-updown-5m-1777473000",
+      endDate: new Date(Date.UTC(2026, 3, 29, 14, 40)).toISOString()
+    };
+
+    expect(isInsideCandidateFinalEntryWindow(candidate, 45, Date.UTC(2026, 3, 29, 14, 33, 30))).toBe(false);
+    expect(isInsideCandidateFinalEntryWindow(candidate, 45, Date.UTC(2026, 3, 29, 14, 34, 30))).toBe(true);
   });
 
   it("keeps short-term crypto threshold markets as a fallback universe", () => {
@@ -93,9 +120,11 @@ describe("crypto market helpers", () => {
   it("understands ISO order book timestamps and final entry windows", () => {
     const freshBook = { ...book, timestamp: new Date().toISOString() };
     const closeSoon = new Date(Date.now() + 30_000).toISOString();
+    const alreadyClosed = new Date(Date.now() - 30_000).toISOString();
 
     expect(orderBookAgeMs(freshBook)).toBeLessThan(1000);
     expect(secondsUntilClose(closeSoon)).toBeGreaterThan(0);
     expect(isInsideFinalEntryWindow(closeSoon, 45)).toBe(true);
+    expect(isInsideFinalEntryWindow(alreadyClosed, 45)).toBe(true);
   });
 });

@@ -85,6 +85,11 @@ export function createDashboardServer({ config, portfolio, riskManager, logger, 
         forcedRiskCheckSeconds: config.forcedRiskCheckSeconds,
         minNetArbEdge: config.minNetArbEdge,
         minNetEdge: config.minNetEdge,
+        paperScoutMode: config.paperScoutMode,
+        paperScoutMaxNegativeEdge: config.paperScoutMaxNegativeEdge,
+        paperScoutMaxSpread: config.paperScoutMaxSpread,
+        paperScoutIntervalSeconds: config.paperScoutIntervalSeconds,
+        paperScoutMaxOpenTrades: config.paperScoutMaxOpenTrades,
         minOrderBookDepthUsd: config.minOrderBookDepthUsd,
         minDepthMultiplier: config.minDepthMultiplier,
         requireBothLegsFillable: config.requireBothLegsFillable,
@@ -123,6 +128,80 @@ export function createDashboardServer({ config, portfolio, riskManager, logger, 
       }
     };
   };
+
+  app.get("/health", (_req, res) => {
+    res.json({ ok: true });
+  });
+
+  app.get("/ready", (_req, res) => {
+    const status = botStatus.getSnapshot();
+    const lastWsAt = status.lastMarketWebSocketMessageAt ? new Date(status.lastMarketWebSocketMessageAt).getTime() : 0;
+    const wsAgeMs = lastWsAt ? Date.now() - lastWsAt : Number.POSITIVE_INFINITY;
+
+    const risk = riskManager.getStatus();
+    const warnings: string[] = [];
+    if ((status.watchedWalletCount ?? 0) === 0 && !config.simulateSignals) {
+      warnings.push("No watched wallets selected; copy-trading loop will be idle.");
+    }
+    const quoteHealth = quoteDaemon?.getHealth();
+    if (quoteHealth && quoteHealth.lastMessageAgeMs !== undefined && quoteHealth.lastMessageAgeMs > config.maxQuoteDelayMs) {
+      warnings.push("Quote daemon data is delayed; strategies may reject opportunities as stale.");
+    }
+
+    if (quoteHealth) {
+      if (
+        quoteHealth.averageQuoteDelayMs !== undefined &&
+        Number.isFinite(quoteHealth.averageQuoteDelayMs) &&
+        quoteHealth.averageQuoteDelayMs > config.quoteFreshnessMs
+      ) {
+        warnings.push("Quote daemon average quote delay exceeds QUOTE_FRESHNESS_MS; order books may be unusable.");
+      }
+      if ((quoteHealth.staleQuoteCount ?? 0) > 0) {
+        warnings.push("Quote daemon is serving stale quotes; many opportunities will be rejected for missing top-of-book.");
+      }
+    }
+
+    if (
+      status.webSocketLatencyMs !== undefined &&
+      Number.isFinite(status.webSocketLatencyMs) &&
+      status.webSocketLatencyMs > config.maxTotalLatencyMs
+    ) {
+      warnings.push("Market WebSocket latency exceeds MAX_TOTAL_LATENCY_MS; strategies may reject opportunities.");
+    }
+
+    const quoteOk = config.quoteDaemonEnabled ? Boolean(quoteHealth?.connected) : true;
+    const marketWsOk = !config.enableMarketWebSocket || Boolean(status.marketWebSocketConnected);
+    const marketDataOk = quoteOk && (config.quoteDaemonEnabled ? true : marketWsOk);
+
+    const wsFreshOk =
+      !config.enableMarketWebSocket || !status.marketWebSocketConnected
+        ? true
+        : wsAgeMs < Math.max(30_000, config.maxStaleDataMs * 20);
+
+    if (!quoteOk) warnings.push("Quote daemon is disconnected; strategies cannot build order books.");
+    if (!marketWsOk) warnings.push("Market WebSocket is disconnected; strategy telemetry may be degraded.");
+    if (config.enableMarketWebSocket && status.marketWebSocketConnected && !wsFreshOk) {
+      warnings.push("Market WebSocket feed is stale; reconnect may be required.");
+    }
+    const ok =
+      Boolean(status.apiConnected) &&
+      marketDataOk &&
+      wsFreshOk &&
+      !risk.killSwitchActive &&
+      !risk.paused;
+
+    res.status(ok ? 200 : 503).json({
+      ok,
+      mode: config.paperTrading ? "PAPER" : "LIVE",
+      apiConnected: status.apiConnected,
+      backupPollingConnected: status.backupPollingConnected,
+      marketWebSocketConnected: status.marketWebSocketConnected,
+      webSocketLatencyMs: status.webSocketLatencyMs,
+      marketWebSocketAgeMs: Number.isFinite(wsAgeMs) ? wsAgeMs : null,
+      risk,
+      warnings
+    });
+  });
 
   app.get("/api/state", (_req, res) => {
     res.json(buildState());

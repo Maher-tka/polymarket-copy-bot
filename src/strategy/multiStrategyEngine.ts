@@ -12,7 +12,14 @@ import { BinaryMarketCandidate, BotConfig, StrategyEngineState } from "../types"
 import { MakerArbitrageMode } from "./makerArbitrageMode";
 import { MarketMakingMode } from "./marketMakingMode";
 import { NetArbitrageScanner } from "./netArbitrageScanner";
-import { parseBinaryMarket, isCryptoUpDownMarket, isShortTermCryptoBinaryMarket, simulateOrderBookFill } from "./orderBookMath";
+import {
+  isCryptoUpDownMarket,
+  isFiveOrFifteenMinuteCryptoMarket,
+  isInsideCandidateFinalEntryWindow,
+  isShortTermCryptoBinaryMarket,
+  parseBinaryMarket,
+  simulateOrderBookFill
+} from "./orderBookMath";
 import { StrategyStateStore } from "./strategyState";
 import { WhaleTracker } from "./whaleTracker";
 import { MarketEventQueue, scoreEvent } from "./eventQueue";
@@ -43,6 +50,7 @@ export class MultiStrategyEngine {
       portfolio: Portfolio;
       strategyRisk: StrategyRiskManager;
       quoteDaemon?: QuoteDaemon;
+      marketWebSocket?: { subscribe(assetIds: string[]): void; setSubscriptions?(assetIds: string[]): void };
     }
   ) {
     this.store = new StrategyStateStore(this.database, {
@@ -59,7 +67,8 @@ export class MultiStrategyEngine {
       quoteDaemon: deps.quoteDaemon
     });
     const cachedClob = {
-      getOrderBook: async (tokenId: string) => (await this.orderBookCache.getFreshOrderBook(tokenId)).book
+      getOrderBook: async (tokenId: string) => (await this.orderBookCache.getFreshOrderBook(tokenId)).book,
+      getOrderBooks: async (tokenIds: string[]) => this.orderBookCache.getFreshOrderBooks(tokenIds)
     };
     this.netArb = new NetArbitrageScanner(
       cachedClob,
@@ -170,7 +179,10 @@ export class MultiStrategyEngine {
 
   private async loadMarketCandidates(): Promise<BinaryMarketCandidate[]> {
     const cacheAge = Date.now() - this.lastMarketLoadAt;
-    if (this.marketCache.length > 0 && cacheAge < 60_000) return this.marketCache;
+    if (this.marketCache.length > 0 && cacheAge < 60_000) {
+      const activeCache = this.pruneInactiveMarketCache();
+      if (activeCache.length > 0) return activeCache;
+    }
 
     const markets = await this.deps.gammaClient.listMarkets({
       active: true,
@@ -194,6 +206,7 @@ export class MultiStrategyEngine {
       .map(parseBinaryMarket)
       .filter((candidate): candidate is BinaryMarketCandidate => Boolean(candidate))
       .sort((a, b) => b.volumeUsd - a.volumeUsd);
+    const fallbackCryptoCandidates = this.deps.config.strategyLabAllMarkets ? broaderCryptoCandidates : [];
     const allLiquidCandidates = this.deps.config.strategyLabAllMarkets
       ? orderBookMarkets
           .map(parseBinaryMarket)
@@ -207,12 +220,19 @@ export class MultiStrategyEngine {
     // Up/Down markets are preferred, then liquid paper-lab markets. The broad
     // universe is paper-only and helps prove whether a >60% strategy is market
     // structure edge or just crypto-specific noise.
-    for (const candidate of [...upDownCandidates, ...allLiquidCandidates, ...broaderCryptoCandidates, ...recentTradeCandidates]) {
+    for (const candidate of [...upDownCandidates, ...allLiquidCandidates, ...fallbackCryptoCandidates, ...recentTradeCandidates]) {
       byCondition.set(candidate.conditionId, candidate);
     }
 
-    this.marketCache = [...byCondition.values()].sort((a, b) => b.volumeUsd - a.volumeUsd);
-    this.deps.quoteDaemon?.subscribe(this.marketCache.flatMap((candidate) => [candidate.yesTokenId, candidate.noTokenId]));
+    const rawCandidates = [...byCondition.values()];
+    this.marketCache = rawCandidates
+      .filter(isFiveOrFifteenMinuteCryptoMarket)
+      .filter((candidate) => !isInsideCandidateFinalEntryWindow(candidate, this.deps.config.finalEntryBufferSeconds))
+      .sort((a, b) => b.volumeUsd - a.volumeUsd)
+      .slice(0, Math.max(1, Math.floor(this.deps.config.maxActiveMarkets)));
+    const tokenIds = this.marketCache.flatMap((candidate) => [candidate.yesTokenId, candidate.noTokenId]);
+    this.syncMarketDataSubscriptions(tokenIds);
+    await this.waitForQuoteWarmup(tokenIds);
     for (const candidate of this.marketCache.slice(0, 20)) {
       this.eventQueue.enqueue({
         type: "freshness-restored",
@@ -227,13 +247,34 @@ export class MultiStrategyEngine {
 
     this.lastMarketLoadAt = Date.now();
     logger.info("Multi-strategy market universe loaded.", {
-      cryptoUpDownMarkets: this.marketCache.length,
+      actionableCandidates: this.marketCache.length,
+      filteredFinalWindowCandidates: rawCandidates.length - this.marketCache.length,
       allLiquidCandidates: allLiquidCandidates.length,
-      gammaCandidates: broaderCryptoCandidates.length,
+      gammaCandidates: fallbackCryptoCandidates.length,
       upDownCandidates: upDownCandidates.length,
       recentTradeCandidates: recentTradeCandidates.length
     });
     return this.marketCache;
+  }
+
+  private pruneInactiveMarketCache(): BinaryMarketCandidate[] {
+    const active = this.marketCache.filter(
+      (candidate) => !isInsideCandidateFinalEntryWindow(candidate, this.deps.config.finalEntryBufferSeconds)
+    );
+    if (active.length !== this.marketCache.length) {
+      this.marketCache = active;
+      this.syncMarketDataSubscriptions(active.flatMap((candidate) => [candidate.yesTokenId, candidate.noTokenId]));
+    }
+    return this.marketCache;
+  }
+
+  private syncMarketDataSubscriptions(tokenIds: string[]): void {
+    this.deps.quoteDaemon?.setSubscriptions(tokenIds);
+    if (this.deps.marketWebSocket?.setSubscriptions) {
+      this.deps.marketWebSocket.setSubscriptions(tokenIds);
+    } else {
+      this.deps.marketWebSocket?.subscribe(tokenIds);
+    }
   }
 
   private async loadCandidatesFromRecentTrades(): Promise<BinaryMarketCandidate[]> {
@@ -257,7 +298,7 @@ export class MultiStrategyEngine {
       try {
         const marketByToken = await this.deps.clobClient.getMarketByToken(trade.asset);
         seen.add(trade.conditionId);
-        candidates.push({
+        const candidate = {
           conditionId: marketByToken.condition_id || trade.conditionId,
           slug: trade.slug,
           title: trade.title,
@@ -268,7 +309,9 @@ export class MultiStrategyEngine {
           yesOutcome: trade.outcomeIndex === 0 ? trade.outcome ?? "Up" : "Up",
           noOutcome: trade.outcomeIndex === 1 ? trade.outcome ?? "Down" : "Down",
           endDate: marketByToken.end_date_iso ?? marketByToken.end_date
-        });
+        };
+        if (!isFiveOrFifteenMinuteCryptoMarket(candidate)) continue;
+        candidates.push(candidate);
       } catch (error) {
         logger.debug("Could not build crypto Up/Down candidate from recent trade.", {
           market: trade.title,
@@ -278,6 +321,26 @@ export class MultiStrategyEngine {
     }
 
     return candidates;
+  }
+
+  private async waitForQuoteWarmup(tokenIds: string[]): Promise<void> {
+    const quoteDaemon = this.deps.quoteDaemon;
+    const uniqueTokenIds = [...new Set(tokenIds.filter(Boolean))];
+    if (!quoteDaemon || uniqueTokenIds.length === 0) return;
+
+    const minimumFreshQuotes = Math.max(2, Math.ceil(uniqueTokenIds.length * 0.75));
+    const deadline = Date.now() + Math.min(2_000, Math.max(500, this.deps.config.maxDataAgeMs));
+    while (Date.now() < deadline) {
+      const freshQuotes = uniqueTokenIds.filter((tokenId) => quoteDaemon.getQuote(tokenId)?.isFresh).length;
+      if (freshQuotes >= minimumFreshQuotes) return;
+      await sleep(100);
+    }
+
+    logger.debug("Quote warmup finished before all active assets were fresh.", {
+      freshQuotes: uniqueTokenIds.filter((tokenId) => quoteDaemon.getQuote(tokenId)?.isFresh).length,
+      totalAssets: uniqueTokenIds.length,
+      minimumFreshQuotes
+    });
   }
 
   private async runForcedCloseRiskCheck(): Promise<void> {
@@ -362,10 +425,22 @@ export class MultiStrategyEngine {
   }
 
   private logError(error: unknown): void {
-    logger.error("Multi-strategy engine tick failed.", { error: error instanceof Error ? error.message : String(error) });
+    const err = error instanceof Error ? error : new Error(String(error));
+    const stack = err.stack ? err.stack.split("\n").slice(0, 8).join("\n") : undefined;
+    const cause = (err as { cause?: unknown }).cause;
+    logger.error("Multi-strategy engine tick failed.", {
+      name: err.name,
+      message: err.message,
+      stack,
+      cause: cause instanceof Error ? { name: cause.name, message: cause.message } : cause
+    });
   }
 }
 
 function simulateSellExit(book: Parameters<typeof simulateOrderBookFill>[0], shares: number) {
   return simulateOrderBookFill(book, "SELL", shares, 0);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

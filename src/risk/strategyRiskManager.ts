@@ -77,6 +77,7 @@ export class StrategyRiskManager {
 function countConsecutiveLosses(strategyState: StrategyEngineState): number {
   let count = 0;
   const trades = strategyState.paperTrades
+    .filter((trade) => !isPaperScoutTrade(trade, strategyState))
     .filter((trade) => trade.closedAt || trade.realizedPnlUsd !== 0)
     .sort((a, b) => new Date(b.closedAt ?? b.openedAt).getTime() - new Date(a.closedAt ?? a.openedAt).getTime());
 
@@ -87,4 +88,18 @@ function countConsecutiveLosses(strategyState: StrategyEngineState): number {
   }
 
   return count;
+}
+
+function isPaperScoutTrade(
+  trade: StrategyEngineState["paperTrades"][number],
+  strategyState: StrategyEngineState
+): boolean {
+  if (trade.paperScout) return true;
+  const opportunity = strategyState.opportunities.find((item) => item.id === trade.opportunityId);
+  if (opportunity?.paperScout || opportunity?.reason?.startsWith("Paper scout mode:")) return true;
+
+  // Older local paper-trade records were created before paperScout was stored.
+  // A negative-edge net-arb fill can only come from scout mode because the
+  // normal net-arb path requires a positive edge before executing.
+  return trade.strategy === "net-arbitrage" && trade.edge < 0 && trade.lossReason === "Negative edge after costs.";
 }

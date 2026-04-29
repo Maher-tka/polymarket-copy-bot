@@ -3,7 +3,15 @@ import { DataClient } from "../polymarket/dataClient";
 import { ClobPublicClient } from "../polymarket/clobPublicClient";
 import { StrategyExecutionPort } from "../execution/executionLayer";
 import { BotConfig, DataApiTrade, PortfolioSnapshot, StrategyOpportunity } from "../types";
-import { bestAsk, bestBid, effectiveTakerFeeRate, orderBookAgeMs, simulateOrderBookFill, spread } from "./orderBookMath";
+import {
+  bestAsk,
+  bestBid,
+  effectiveTakerFeeRate,
+  isFiveOrFifteenMinuteCryptoMarket,
+  orderBookAgeMs,
+  simulateOrderBookFill,
+  spread
+} from "./orderBookMath";
 import { StrategyStateStore } from "./strategyState";
 import { MarketEventQueue, scoreEvent } from "./eventQueue";
 
@@ -17,7 +25,13 @@ export class WhaleTracker {
     private readonly execution: StrategyExecutionPort,
     private readonly config: Pick<
       BotConfig,
-      "whaleMinTradeUsd" | "takerFeeRate" | "cryptoTakerFeeRate" | "arbitrageTargetShares" | "maxDataAgeMs" | "rejectPartialFills"
+      | "whaleMinTradeUsd"
+      | "takerFeeRate"
+      | "cryptoTakerFeeRate"
+      | "arbitrageTargetShares"
+      | "maxDataAgeMs"
+      | "rejectPartialFills"
+      | "strategyLabAllMarkets"
     >,
     private readonly eventQueue?: MarketEventQueue
   ) {}
@@ -31,6 +45,7 @@ export class WhaleTracker {
 
       const notionalUsd = Number(trade.price) * Number(trade.size);
       if (!Number.isFinite(notionalUsd) || notionalUsd < this.config.whaleMinTradeUsd) continue;
+      if (!this.config.strategyLabAllMarkets && !isFiveOrFifteenMinuteCryptoMarket(trade)) continue;
 
       const score = this.scoreTrade(trade, notionalUsd);
       const opportunity: StrategyOpportunity = {

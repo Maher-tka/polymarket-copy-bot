@@ -19,6 +19,8 @@ export interface CachedTopOfBook {
 
 export class OrderBookCache {
   private readonly books = new Map<string, { book: OrderBook; updatedAtMs: number; source: "websocket" | "rest" | "quote-daemon" }>();
+  private readonly noOrderBookUntilMs = new Map<string, number>();
+  private readonly noOrderBookTtlMs = 10 * 60_000;
 
   constructor(
     private readonly clobClient: ClobPublicClient,
@@ -37,10 +39,58 @@ export class OrderBookCache {
   }
 
   async getFreshOrderBook(tokenId: string): Promise<{ book: OrderBook; top: CachedTopOfBook; fromCache: boolean }> {
-    const quote = this.options.quoteDaemon?.getQuote(tokenId);
-    if (quote && quote.quoteDelayMs > (this.options.maxQuoteDelayMs ?? this.options.maxDataAgeMs)) {
-      throw new Error(`Quote daemon delay ${Math.round(quote.quoteDelayMs)}ms exceeds MAX_QUOTE_DELAY_MS.`);
+    if (this.isNoOrderBookCached(tokenId)) {
+      throw new Error(`CLOB orderbook missing for token id ${tokenId} (cached).`);
     }
+
+    const cached = this.getFreshCachedOrderBook(tokenId);
+    if (cached) return cached;
+
+    const book = await this.clobClient.getOrderBook(tokenId).catch((error) => {
+      if (this.isNoOrderBookError(error)) this.cacheNoOrderBook(tokenId, "rest");
+      throw error;
+    });
+    this.observeOrderBook(book, "rest");
+    const top = this.getTopOfBook(tokenId);
+    if (!top) {
+      throw new Error(`Order book cache failed to store token ${tokenId}.`);
+    }
+    return { book, top, fromCache: false };
+  }
+
+  async getFreshOrderBooks(tokenIds: string[]): Promise<Map<string, OrderBook>> {
+    const output = new Map<string, OrderBook>();
+    const missingTokenIds: string[] = [];
+
+    for (const tokenId of [...new Set(tokenIds.filter(Boolean))]) {
+      if (this.isNoOrderBookCached(tokenId)) continue;
+      const cached = this.getFreshCachedOrderBook(tokenId);
+      if (cached) {
+        output.set(tokenId, cached.book);
+      } else {
+        missingTokenIds.push(tokenId);
+      }
+    }
+
+    if (missingTokenIds.length > 0) {
+      const books = await this.clobClient.getOrderBooks(missingTokenIds);
+      for (const book of books.values()) {
+        this.observeOrderBook(book, "rest");
+        output.set(book.asset_id, book);
+      }
+    }
+
+    return output;
+  }
+
+  private getFreshCachedOrderBook(tokenId: string): { book: OrderBook; top: CachedTopOfBook; fromCache: boolean } | undefined {
+    if (this.isNoOrderBookCached(tokenId)) {
+      throw new Error(`CLOB orderbook missing for token id ${tokenId} (cached).`);
+    }
+
+    const quote = this.options.quoteDaemon?.getQuote(tokenId);
+    const usableQuote =
+      quote && quote.quoteDelayMs <= (this.options.maxQuoteDelayMs ?? this.options.maxDataAgeMs) ? quote : undefined;
 
     const quoteBook = this.options.quoteDaemon?.getOrderBook(tokenId);
     if (quoteBook) {
@@ -49,7 +99,7 @@ export class OrderBookCache {
       if (top && !top.stale) return { book: quoteBook, top, fromCache: true };
     }
 
-    const patchedBook = quote ? this.mergeQuoteIntoCachedBook(tokenId, quote) : undefined;
+    const patchedBook = usableQuote ? this.mergeQuoteIntoCachedBook(tokenId, usableQuote) : undefined;
     if (patchedBook) {
       this.observeOrderBook(patchedBook, "quote-daemon");
       const top = this.getTopOfBook(tokenId);
@@ -62,13 +112,7 @@ export class OrderBookCache {
       if (cached) return { book: cached.book, top: cachedTop, fromCache: true };
     }
 
-    const book = await this.clobClient.getOrderBook(tokenId);
-    this.observeOrderBook(book, "rest");
-    const top = this.getTopOfBook(tokenId);
-    if (!top) {
-      throw new Error(`Order book cache failed to store token ${tokenId}.`);
-    }
-    return { book, top, fromCache: false };
+    return undefined;
   }
 
   observeOrderBook(book: OrderBook, source: "websocket" | "rest" | "quote-daemon" = "rest"): void {
@@ -231,6 +275,31 @@ export class OrderBookCache {
     }
 
     for (const event of events) queue.enqueue(event);
+  }
+
+  private isNoOrderBookCached(tokenId: string): boolean {
+    const until = this.noOrderBookUntilMs.get(tokenId);
+    if (!until) return false;
+    if (Date.now() < until) return true;
+    this.noOrderBookUntilMs.delete(tokenId);
+    return false;
+  }
+
+  private cacheNoOrderBook(tokenId: string, source: "rest" | "quote-daemon"): void {
+    const until = Date.now() + this.noOrderBookTtlMs;
+    this.noOrderBookUntilMs.set(tokenId, until);
+    this.options.eventQueue?.enqueue({
+      type: "freshness-lost",
+      priority: scoreEvent("freshness-lost"),
+      tokenId,
+      reason: `No orderbook exists for token id (source: ${source}).`,
+      dataAgeMs: Number.POSITIVE_INFINITY
+    });
+  }
+
+  private isNoOrderBookError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.toLowerCase().includes("no orderbook exists for the requested token id");
   }
 }
 

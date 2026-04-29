@@ -7,6 +7,9 @@ import { OrderBook, OrderBookLevel, QuoteCacheEntry, QuoteDaemonHealth } from ".
 
 const MARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
 const LOCAL_HOST = "127.0.0.1";
+const HEARTBEAT_MS = 10_000;
+const WATCHDOG_INTERVAL_MS = 5_000;
+const MIN_SILENCE_RECONNECT_MS = 30_000;
 
 export interface QuoteDaemonOptions {
   enabled: boolean;
@@ -29,11 +32,13 @@ export class QuoteDaemon extends EventEmitter {
   private server?: http.Server;
   private reconnectTimer?: NodeJS.Timeout;
   private pingTimer?: NodeJS.Timeout;
+  private watchdogTimer?: NodeJS.Timeout;
   private readonly subscribedAssetIds = new Set<string>();
   private readonly quotes = new Map<string, MutableQuote>();
   private readonly books = new Map<string, OrderBook>();
   private connected = false;
   private lastMessageAtMs?: number;
+  private lastSubscriptionAtMs?: number;
   private reconnects = 0;
   private reconnectAttempt = 0;
 
@@ -49,6 +54,7 @@ export class QuoteDaemon extends EventEmitter {
   async stop(): Promise<void> {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
     this.ws?.close();
     await new Promise<void>((resolve) => {
       if (!this.server) return resolve();
@@ -70,6 +76,41 @@ export class QuoteDaemon extends EventEmitter {
     this.sendSubscription(added);
   }
 
+  setSubscriptions(assetIds: string[]): void {
+    const nextAssetIds = [...new Set(assetIds.filter(Boolean))];
+    const next = new Set(nextAssetIds);
+    const removed = [...this.subscribedAssetIds].some((assetId) => !next.has(assetId));
+    const added = nextAssetIds.filter((assetId) => !this.subscribedAssetIds.has(assetId));
+    if (!removed && added.length === 0) return;
+
+    this.subscribedAssetIds.clear();
+    for (const assetId of nextAssetIds) this.subscribedAssetIds.add(assetId);
+    for (const assetId of [...this.quotes.keys()]) {
+      if (!next.has(assetId)) this.quotes.delete(assetId);
+    }
+    for (const assetId of [...this.books.keys()]) {
+      if (!next.has(assetId)) this.books.delete(assetId);
+    }
+    if (!this.options.enabled) return;
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.connect();
+      return;
+    }
+
+    if (removed) {
+      logger.info("Quote daemon subscriptions changed; reconnecting with active universe.", {
+        subscribedAssets: nextAssetIds.length,
+        removed: true
+      });
+      this.ws.terminate();
+      this.scheduleReconnect("subscriptions");
+      return;
+    }
+
+    this.sendSubscription(added);
+  }
+
   getQuote(assetId: string): QuoteCacheEntry | undefined {
     const quote = this.quotes.get(assetId);
     return quote ? this.toQuoteEntry(quote) : undefined;
@@ -85,9 +126,15 @@ export class QuoteDaemon extends EventEmitter {
     if (!quote?.isFresh || !book) return undefined;
     return {
       ...book,
-      timestamp: quote.eventTimestamp ?? quote.receivedAt,
-      last_trade_price: quote.lastTradePrice === undefined ? book.last_trade_price : String(quote.lastTradePrice)
+      timestamp: quote.receivedAt,
+      last_trade_price: quote.lastTradePrice === undefined ? book.last_trade_price : String(quote.lastTradePrice),
+      bids: quote.bestBid === undefined ? [...book.bids] : replaceTopLevel(book.bids, quote.bestBid, "bid"),
+      asks: quote.bestAsk === undefined ? [...book.asks] : replaceTopLevel(book.asks, quote.bestAsk, "ask")
     };
+  }
+
+  getCachedOrderBook(assetId: string): OrderBook | undefined {
+    return this.getOrderBook(assetId);
   }
 
   getHealth(): QuoteDaemonHealth {
@@ -142,7 +189,10 @@ export class QuoteDaemon extends EventEmitter {
       logger.info("Quote daemon WebSocket connected.", { subscribedAssets: this.subscribedAssetIds.size });
       this.emit("status", this.getHealth());
       this.sendSubscription([...this.subscribedAssetIds]);
-      this.pingTimer = setInterval(() => this.ws?.send("PING"), 10_000);
+      if (this.pingTimer) clearInterval(this.pingTimer);
+      if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+      this.pingTimer = setInterval(() => this.ws?.send("PING"), HEARTBEAT_MS);
+      this.watchdogTimer = setInterval(() => this.checkForSilentConnection(), WATCHDOG_INTERVAL_MS);
     });
 
     this.ws.on("message", (raw) => {
@@ -163,8 +213,11 @@ export class QuoteDaemon extends EventEmitter {
     });
   }
 
-  private scheduleReconnect(reason: "closed" | "error"): void {
+  private scheduleReconnect(reason: "closed" | "error" | "silent" | "subscriptions"): void {
     if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    this.pingTimer = undefined;
+    this.watchdogTimer = undefined;
     this.connected = false;
     this.emit("status", this.getHealth());
     if (!this.options.enabled || this.reconnectTimer) return;
@@ -181,6 +234,7 @@ export class QuoteDaemon extends EventEmitter {
 
   private sendSubscription(assetIds: string[]): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || assetIds.length === 0) return;
+    this.lastSubscriptionAtMs = Date.now();
     this.ws.send(
       JSON.stringify({
         type: "market",
@@ -196,8 +250,13 @@ export class QuoteDaemon extends EventEmitter {
     const item = record as Record<string, unknown>;
     const eventType = String(item.event_type ?? item.type ?? "").toLowerCase();
 
-    if (eventType === "price_change" && Array.isArray(item.changes)) {
-      for (const change of item.changes) this.handlePriceChange(change, item);
+    const priceChanges = Array.isArray(item.price_changes)
+      ? item.price_changes
+      : Array.isArray(item.changes)
+        ? item.changes
+        : undefined;
+    if (eventType === "price_change" && priceChanges) {
+      for (const change of priceChanges) this.handlePriceChange(change, item);
       return;
     }
 
@@ -257,11 +316,35 @@ export class QuoteDaemon extends EventEmitter {
     const side = String(merged.side ?? merged.side_type ?? "").toLowerCase();
     const patch: Partial<MutableQuote> = {};
 
-    if (side.includes("buy") || side.includes("bid")) patch.bestBid = price;
-    else if (side.includes("sell") || side.includes("ask")) patch.bestAsk = price;
-    else patch.lastTradePrice = price;
+    patch.bestBid = numberFrom(merged.best_bid ?? merged.bestBid ?? merged.bid);
+    patch.bestAsk = numberFrom(merged.best_ask ?? merged.bestAsk ?? merged.ask);
 
+    if (patch.bestBid === undefined && (side.includes("buy") || side.includes("bid"))) patch.bestBid = price;
+    if (patch.bestAsk === undefined && (side.includes("sell") || side.includes("ask"))) patch.bestAsk = price;
+    if (patch.bestBid === undefined && patch.bestAsk === undefined) patch.lastTradePrice = price;
+
+    this.applyPriceChangeToBook(merged, patch);
     this.upsertQuote(merged, patch);
+  }
+
+  private applyPriceChangeToBook(input: Record<string, unknown>, patch: Partial<MutableQuote>): void {
+    const assetId = assetIdFrom(input);
+    const book = assetId ? this.books.get(assetId) : undefined;
+    if (!assetId || !book) return;
+
+    const side = String(input.side ?? input.side_type ?? "").toLowerCase();
+    const price = input.price;
+    const size = input.size;
+    if (price !== undefined && size !== undefined) {
+      if (side.includes("buy") || side.includes("bid")) updateLevel(book.bids, String(price), String(size));
+      if (side.includes("sell") || side.includes("ask")) updateLevel(book.asks, String(price), String(size));
+    }
+
+    if (patch.bestBid !== undefined) book.bids = replaceTopLevel(book.bids, patch.bestBid, "bid");
+    if (patch.bestAsk !== undefined) book.asks = replaceTopLevel(book.asks, patch.bestAsk, "ask");
+    book.timestamp = String(input.timestamp ?? input.event_timestamp ?? Date.now());
+    book.market = String(input.market ?? book.market);
+    if (input.hash !== undefined) book.hash = String(input.hash);
   }
 
   private upsertQuote(input: Record<string, unknown>, patch: Partial<MutableQuote>): void {
@@ -297,6 +380,28 @@ export class QuoteDaemon extends EventEmitter {
       isFresh: quoteDelayMs <= this.options.maxQuoteDelayMs && ageMs <= this.options.quoteFreshnessMs
     };
   }
+
+  private checkForSilentConnection(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.subscribedAssetIds.size === 0) return;
+    const referenceMs = this.lastMessageAtMs ?? this.lastSubscriptionAtMs;
+    if (!referenceMs) return;
+
+    const silenceMs = Date.now() - referenceMs;
+    const reconnectAfterMs = Math.max(
+      MIN_SILENCE_RECONNECT_MS,
+      this.options.maxQuoteDelayMs * 3,
+      this.options.quoteFreshnessMs * 10
+    );
+    if (silenceMs <= reconnectAfterMs) return;
+
+    logger.warn("Quote daemon WebSocket silent; forcing reconnect.", {
+      silenceMs: Math.round(silenceMs),
+      reconnectAfterMs,
+      subscribedAssets: this.subscribedAssetIds.size
+    });
+    this.ws.terminate();
+    this.scheduleReconnect("silent");
+  }
 }
 
 function assetIdFrom(item: Record<string, unknown>): string {
@@ -323,7 +428,32 @@ function bestAsk(levels: OrderBookLevel[]): number | undefined {
   return prices.length > 0 ? Math.min(...prices) : undefined;
 }
 
+function replaceTopLevel(levels: OrderBookLevel[], price: number, side: "bid" | "ask"): OrderBookLevel[] {
+  const next = [...levels];
+  const fallbackSize = next.find((level) => Number(level.price) === price)?.size ?? next[0]?.size ?? "1";
+  const level = { price: String(price), size: fallbackSize };
+  const existingIndex = next.findIndex((item) => Number(item.price) === price);
+  if (existingIndex >= 0) next[existingIndex] = level;
+  else next.push(level);
+  return side === "bid"
+    ? next.sort((a, b) => Number(b.price) - Number(a.price))
+    : next.sort((a, b) => Number(a.price) - Number(b.price));
+}
+
+function updateLevel(levels: OrderBookLevel[], price: string, size: string): void {
+  const numericSize = Number(size);
+  const index = levels.findIndex((level) => Number(level.price) === Number(price));
+  if (!Number.isFinite(numericSize) || numericSize <= 0) {
+    if (index >= 0) levels.splice(index, 1);
+    return;
+  }
+
+  if (index >= 0) levels[index] = { price, size };
+  else levels.push({ price, size });
+}
+
 function numberFrom(value: unknown): number | undefined {
+  if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 }

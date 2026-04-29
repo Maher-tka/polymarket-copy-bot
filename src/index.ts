@@ -38,6 +38,15 @@ async function main(): Promise<void> {
     throw new Error("Real trading is disabled in this build. Set PAPER_TRADING_ONLY=true and PAPER_TRADING=true.");
   }
 
+  const staleBudgetMs = Math.min(config.maxDataAgeMs, config.maxStaleDataMs);
+  if (staleBudgetMs < 750) {
+    logger.warn("Configured stale-data budget is extremely low; paper trading may freeze due to false stale rejections.", {
+      maxDataAgeMs: config.maxDataAgeMs,
+      maxStaleDataMs: config.maxStaleDataMs,
+      effectiveMs: staleBudgetMs
+    });
+  }
+
   const dataClient = new DataClient(config);
   const gammaClient = new GammaClient(config);
   const clobPublicClient = new ClobPublicClient(config);
@@ -59,6 +68,11 @@ async function main(): Promise<void> {
   await quoteDaemon.start();
   const telegram = new TelegramNotifier(config);
   const marketWebSocket = config.enableMarketWebSocket ? new MarketWebSocket() : undefined;
+  if (config.quoteDaemonEnabled) {
+    clobPublicClient.setLiveOrderBookProvider(quoteDaemon);
+  } else if (marketWebSocket) {
+    clobPublicClient.setLiveOrderBookProvider(marketWebSocket);
+  }
   botStatus.setApiConnected(true);
   botStatus.setSimulationEnabled(config.simulateSignals);
   botStatus.setTelegramConfigured(Boolean(config.telegramBotToken && config.telegramChatId));
@@ -82,7 +96,8 @@ async function main(): Promise<void> {
     clobClient: clobPublicClient,
     portfolio,
     strategyRisk: strategyRiskManager,
-    quoteDaemon
+    quoteDaemon,
+    marketWebSocket
   });
   marketWebSocket?.on("message", (message) => strategyEngine.observeMarketWebSocketMessage(message));
 

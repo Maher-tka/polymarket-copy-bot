@@ -1820,6 +1820,7 @@ function RiskPanel({
         <RiskLine label="Max total exposure" value={percent(state.safeConfig.maxTotalExposurePct)} />
         <RiskLine label="Min reward/risk" value={`${state.safeConfig.minRewardRiskRatio.toFixed(2)}x`} />
         <RiskLine label="Min net arb edge" value={`${(state.safeConfig.minNetArbEdge * 100).toFixed(2)}%`} />
+        <RiskLine label="Paper scout mode" value={state.safeConfig.paperScoutMode ? "On" : "Off"} danger={state.safeConfig.paperScoutMode} />
         <RiskLine label="Max stale data age" value={`${state.safeConfig.maxStaleDataMs}ms`} />
         <RiskLine label="Final entry buffer" value={`${state.safeConfig.finalEntryBufferSeconds}s`} />
         <RiskLine label="Forced close check" value={`${state.safeConfig.forcedRiskCheckSeconds}s`} />
@@ -2125,6 +2126,8 @@ function SettingsPanel({ state }: { state: DashboardState }) {
           <div className="grid gap-2">
             <RiskLine label="Min net edge" value={`${(state.safeConfig.minNetEdge * 100).toFixed(2)}%`} />
             <RiskLine label="Max spread" value={`${(state.safeConfig.maxSpread * 100).toFixed(2)}%`} />
+            <RiskLine label="Scout edge / spread" value={`${(state.safeConfig.paperScoutMaxNegativeEdge * 100).toFixed(2)}% / ${(state.safeConfig.paperScoutMaxSpread * 100).toFixed(2)}%`} danger={state.safeConfig.paperScoutMode} />
+            <RiskLine label="Scout cadence / open" value={`${state.safeConfig.paperScoutIntervalSeconds}s / ${state.safeConfig.paperScoutMaxOpenTrades}`} danger={state.safeConfig.paperScoutMode} />
             <RiskLine label="Max slippage" value={`${(state.safeConfig.maxSlippage * 100).toFixed(2)}%`} />
             <RiskLine label="Max data age" value={`${state.safeConfig.maxDataAgeMs}ms`} />
             <RiskLine label="Depth multiplier" value={`${state.safeConfig.minDepthMultiplier}x`} />

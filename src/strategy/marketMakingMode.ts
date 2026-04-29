@@ -13,15 +13,18 @@ import {
   bestAsk,
   bestBid,
   calculateBinaryTakerFeeUsd,
-  isInsideFinalEntryWindow,
+  isInsideCandidateFinalEntryWindow,
   midpoint,
   orderBookAgeMs,
   secondsUntilClose,
+  secondsUntilCandidateClose,
   spread
 } from "./orderBookMath";
 import { StrategyStateStore } from "./strategyState";
 
 export class MarketMakingMode {
+  private readonly staleCooldownUntil = new Map<string, number>();
+
   constructor(
     private readonly clobClient: Pick<ClobPublicClient, "getOrderBook">,
     private readonly store: StrategyStateStore,
@@ -48,9 +51,21 @@ export class MarketMakingMode {
   async tick(candidates: BinaryMarketCandidate[], portfolio: PortfolioSnapshot): Promise<void> {
     await this.cancelOrFillOpenOrders();
 
-    for (const candidate of candidates.slice(0, 10)) {
+    const now = Date.now();
+    const activeCandidates = candidates
+      .filter((candidate) => !isInsideCandidateFinalEntryWindow(candidate, this.config.finalEntryBufferSeconds, now))
+      .filter((candidate) => !this.isCoolingDown(candidate.conditionId, now));
+
+    for (const candidate of activeCandidates.slice(0, 10)) {
       if (candidate.volumeUsd < this.config.minMarketVolumeUsd) continue;
-      const book = await this.clobClient.getOrderBook(candidate.yesTokenId);
+      const book = await this.clobClient.getOrderBook(candidate.yesTokenId).catch((error) => {
+        logger.debug("Market making skipped candidate with unreadable book.", {
+          market: candidate.title,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        return undefined;
+      });
+      if (!book) continue;
       const bid = bestBid(book);
       const ask = bestAsk(book);
       const mid = midpoint(book);
@@ -82,8 +97,11 @@ export class MarketMakingMode {
       const reasons: string[] = [];
       const maxDataAge = this.config.marketMakingMaxDataAgeMs;
 
-      if (dataAgeMs > maxDataAge) reasons.push(`Stale order book data: ${Math.round(dataAgeMs)}ms old.`);
-      if (isInsideFinalEntryWindow(candidate.endDate, this.config.finalEntryBufferSeconds)) {
+      if (dataAgeMs > maxDataAge) {
+        reasons.push(`Stale order book data: ${Math.round(dataAgeMs)}ms old.`);
+        this.coolDownStaleCandidate(candidate.conditionId, dataAgeMs);
+      }
+      if (isInsideCandidateFinalEntryWindow(candidate, this.config.finalEntryBufferSeconds)) {
         reasons.push(`Market is inside final ${this.config.finalEntryBufferSeconds}s entry buffer.`);
       }
       if (!tightEnough) reasons.push("Spread is wider than MAX_SPREAD for market making.");
@@ -112,8 +130,8 @@ export class MarketMakingMode {
         accepted: reasons.length === 0,
         rejectionReasons: reasons,
         simulatedEntryPrice: round(makerLimit),
-        secondsToClose: roundOptional(secondsUntilClose(candidate.endDate)),
-        tooCloseToClose: isInsideFinalEntryWindow(candidate.endDate, this.config.finalEntryBufferSeconds),
+        secondsToClose: roundOptional(secondsUntilCandidateClose(candidate)),
+        tooCloseToClose: isInsideCandidateFinalEntryWindow(candidate, this.config.finalEntryBufferSeconds),
         missedFill: reasons.some((reason) => reason.includes("queue")),
         lossCause: lossCauseForReasons(reasons),
         createdAt: new Date().toISOString()
@@ -141,7 +159,7 @@ export class MarketMakingMode {
         yesTokenId: candidate.yesTokenId,
         side: "BUY",
         marketEndDate: candidate.endDate,
-        secondsToClose: roundOptional(secondsUntilClose(candidate.endDate)),
+        secondsToClose: roundOptional(secondsUntilCandidateClose(candidate)),
         edge: round(edge),
         score: round(Math.min(100, candidate.volumeUsd / 1000 + 1 / Math.max(0.001, bookSpread))),
         targetShares,
@@ -186,7 +204,14 @@ export class MarketMakingMode {
       .makerOrders.filter((order) => order.strategy === "market-making" && order.status === "open");
 
     for (const order of orders) {
-      const book = await this.clobClient.getOrderBook(order.tokenId);
+      const book = await this.clobClient.getOrderBook(order.tokenId).catch((error) => {
+        logger.debug("Market making skipped open order with unreadable book.", {
+          orderId: order.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        return undefined;
+      });
+      if (!book) continue;
       const ask = bestAsk(book);
       const mid = midpoint(book);
       const tickSize = Number(book.tick_size) || 0.01;
@@ -290,6 +315,21 @@ export class MarketMakingMode {
       createdAt: new Date().toISOString()
     });
     logger.info("Market making maker order missed in paper simulation.", { orderId: order.id });
+  }
+
+  private isCoolingDown(conditionId: string, now = Date.now()): boolean {
+    const until = this.staleCooldownUntil.get(conditionId);
+    if (!until) return false;
+    if (until <= now) {
+      this.staleCooldownUntil.delete(conditionId);
+      return false;
+    }
+    return true;
+  }
+
+  private coolDownStaleCandidate(conditionId: string, ageMs: number): void {
+    const cooldownMs = Math.min(5 * 60_000, Math.max(30_000, Math.round(ageMs)));
+    this.staleCooldownUntil.set(conditionId, Date.now() + cooldownMs);
   }
 }
 

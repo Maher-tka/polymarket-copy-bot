@@ -8,7 +8,7 @@ import {
 } from "../types";
 
 export function parseBinaryMarket(market: GammaMarket): BinaryMarketCandidate | undefined {
-  const tokenIds = parseJsonArray(market.clobTokenIds);
+  const tokenIds = parseLosslessTokenIdArray(market.clobTokenIds);
   const outcomes = parseJsonArray(market.outcomes);
   if (!market.conditionId || tokenIds.length < 2) return undefined;
 
@@ -24,6 +24,23 @@ export function parseBinaryMarket(market: GammaMarket): BinaryMarketCandidate | 
     noOutcome: outcomes[1] ?? "No",
     endDate: market.endDateIso ?? market.endDateTime ?? market.endDate ?? market.gameStartTime
   };
+}
+
+function parseLosslessTokenIdArray(value: string | undefined): string[] {
+  if (!value) return [];
+  const trimmed = value.trim();
+
+  // Gamma's `clobTokenIds` is often a JSON-encoded array of *numbers*. JSON.parse would coerce
+  // those into JS Numbers and lose precision for 256-bit-like token IDs, producing invalid
+  // token IDs (and downstream CLOB 404s). Instead, extract the raw digits directly.
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    const matches = [...trimmed.matchAll(/"(\d+)"|(\d+)/g)];
+    const extracted = matches.map((match) => match[1] ?? match[2]).filter(Boolean) as string[];
+    if (extracted.length > 0) return extracted;
+  }
+
+  // Fallback for non-JSON or unexpected formats (comma-separated, etc.).
+  return parseJsonArray(value);
 }
 
 export function isCryptoUpDownMarket(market: GammaMarket): boolean {
@@ -56,13 +73,11 @@ export function isFiveOrFifteenMinuteCryptoMarket(input: { question?: string; ti
     text.includes(term)
   );
   const shortWindow =
-    text.includes("5 minute") ||
-    text.includes("5-minute") ||
-    text.includes("5m") ||
-    text.includes("15 minute") ||
-    text.includes("15-minute") ||
-    text.includes("15m") ||
-    text.includes("up or down");
+    /\b5\s*-?\s*(minute|minutes|min)\b/.test(text) ||
+    /\b15\s*-?\s*(minute|minutes|min)\b/.test(text) ||
+    /\b5m\b/.test(text) ||
+    /\b15m\b/.test(text) ||
+    /\d{1,2}:\d{2}\s*(am|pm)?\s*-\s*\d{1,2}:\d{2}\s*(am|pm)?/.test(text);
   return crypto && shortWindow;
 }
 
@@ -90,6 +105,24 @@ export function secondsUntilClose(endDate?: string, nowMs = Date.now()): number 
 
 export function isInsideFinalEntryWindow(endDate: string | undefined, bufferSeconds: number, nowMs = Date.now()): boolean {
   const seconds = secondsUntilClose(endDate, nowMs);
+  return seconds !== undefined && seconds <= bufferSeconds;
+}
+
+export function secondsUntilCandidateClose(
+  candidate: Pick<BinaryMarketCandidate, "endDate" | "title" | "slug">,
+  nowMs = Date.now()
+): number | undefined {
+  const titleCloseMs = parseEtWindowEndMs(candidate.title ?? candidate.slug, nowMs);
+  if (titleCloseMs !== undefined) return Math.max(0, (titleCloseMs - nowMs) / 1000);
+  return secondsUntilClose(candidate.endDate, nowMs);
+}
+
+export function isInsideCandidateFinalEntryWindow(
+  candidate: Pick<BinaryMarketCandidate, "endDate" | "title" | "slug">,
+  bufferSeconds: number,
+  nowMs = Date.now()
+): boolean {
+  const seconds = secondsUntilCandidateClose(candidate, nowMs);
   return seconds !== undefined && seconds <= bufferSeconds;
 }
 
@@ -203,4 +236,73 @@ function parseLevels(levels: OrderBookLevel[]): Array<{ price: number; size: num
   return levels
     .map((level) => ({ price: Number(level.price), size: Number(level.size) }))
     .filter((level) => Number.isFinite(level.price) && Number.isFinite(level.size) && level.price > 0 && level.size > 0);
+}
+
+const MONTH_INDEX: Record<string, number> = {
+  january: 0,
+  february: 1,
+  march: 2,
+  april: 3,
+  may: 4,
+  june: 5,
+  july: 6,
+  august: 7,
+  september: 8,
+  october: 9,
+  november: 10,
+  december: 11
+};
+
+function parseEtWindowEndMs(text: string | undefined, nowMs: number): number | undefined {
+  if (!text) return undefined;
+  const match = text.match(
+    /(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2}),\s+\d{1,2}(?::\d{2})?\s*(am|pm)\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*et/i
+  );
+  if (!match) return undefined;
+
+  const month = MONTH_INDEX[match[1].toLowerCase()];
+  const day = Number(match[2]);
+  const hour = toTwentyFourHour(Number(match[4]), match[6]);
+  const minute = Number(match[5] ?? 0);
+  if (month === undefined || !Number.isFinite(day) || !Number.isFinite(hour) || !Number.isFinite(minute)) return undefined;
+
+  const now = new Date(nowMs);
+  const year = closestYearForMonth(now.getUTCFullYear(), month, nowMs, day, hour, minute);
+  return zonedNewYorkTimeToUtcMs(year, month, day, hour, minute);
+}
+
+function toTwentyFourHour(hour: number, period: string): number {
+  const normalized = hour % 12;
+  return period.toLowerCase() === "pm" ? normalized + 12 : normalized;
+}
+
+function closestYearForMonth(baseYear: number, month: number, nowMs: number, day: number, hour: number, minute: number): number {
+  const candidates = [baseYear - 1, baseYear, baseYear + 1];
+  return candidates
+    .map((year) => ({ year, distance: Math.abs(zonedNewYorkTimeToUtcMs(year, month, day, hour, minute) - nowMs) }))
+    .sort((a, b) => a.distance - b.distance)[0].year;
+}
+
+function zonedNewYorkTimeToUtcMs(year: number, month: number, day: number, hour: number, minute: number): number {
+  const guess = Date.UTC(year, month, day, hour, minute);
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(new Date(guess)).map((part) => [part.type, part.value]));
+  const zonedAsUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour) % 24,
+    Number(parts.minute),
+    Number(parts.second)
+  );
+  return guess - (zonedAsUtc - guess);
 }

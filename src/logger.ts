@@ -12,7 +12,9 @@ function redactSecrets(value: unknown): unknown {
     // Do not leak private keys, long API secrets, or auth headers into the dashboard.
     return value
       .replace(/0x[a-fA-F0-9]{64}/g, "0x[REDACTED_PRIVATE_KEY]")
-      .replace(/[A-Za-z0-9_-]{32,}/g, "[REDACTED_SECRET]");
+      // Avoid over-redacting long public identifiers like numeric token IDs. Only redact
+      // "secret-like" strings that contain at least one non-numeric character.
+      .replace(/(?=[A-Za-z0-9_-]{32,})(?=.*[A-Za-z_-])[A-Za-z0-9_-]{32,}/g, "[REDACTED_SECRET]");
   }
 
   if (Array.isArray(value)) return value.map(redactSecrets);

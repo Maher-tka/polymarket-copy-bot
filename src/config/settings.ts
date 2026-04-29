@@ -47,6 +47,13 @@ function readMode(env: EnvSource): BotMode {
   return value as BotMode;
 }
 
+function defaultMaxDataAgeMs(mode: BotMode): number {
+  // 300ms is too strict for normal internet latency and can freeze paper-mode execution by
+  // rejecting otherwise valid opportunities as "stale". Keep backtests tight, but make
+  // live-ish modes resilient by default.
+  return mode === "backtest" ? 300 : 2_000;
+}
+
 export function loadConfigFromEnv(env: EnvSource = process.env): BotConfig {
   const mode = readMode(env);
   const enableLiveTrading = readBool(env, "ENABLE_LIVE_TRADING", false);
@@ -111,7 +118,7 @@ export function loadConfigFromEnv(env: EnvSource = process.env): BotConfig {
     quoteDaemonEnabled: readBool(env, "QUOTE_DAEMON_ENABLED", true),
     quoteDaemonPort: readNumber(env, "QUOTE_DAEMON_PORT", 3001),
     maxQuoteDelayMs: readNumber(env, "MAX_QUOTE_DELAY_MS", 1000),
-    quoteFreshnessMs: readNumber(env, "QUOTE_FRESHNESS_MS", 1000),
+    quoteFreshnessMs: readNumber(env, "QUOTE_FRESHNESS_MS", 2000),
     watchedWallets: readCsv(env, "WATCHED_WALLETS"),
     maxWatchedTraders: readNumber(env, "MAX_WATCHED_TRADERS", 5),
     leaderboardLimit: readNumber(env, "LEADERBOARD_LIMIT", 20),
@@ -133,8 +140,16 @@ export function loadConfigFromEnv(env: EnvSource = process.env): BotConfig {
     maxOneMarketExposureUsd: readNumber(env, "MAX_ONE_MARKET_EXPOSURE_USD", 5),
     maxStrategyOpenPositions: readNumber(env, "MAX_STRATEGY_OPEN_POSITIONS", 10),
     maxSlippage: readNumber(env, "MAX_SLIPPAGE", 0.003),
-    maxStaleDataMs: readNumber(env, "MAX_STALE_DATA_MS", readNumber(env, "MAX_DATA_AGE_MS", 300)),
-    maxDataAgeMs: readNumber(env, "MAX_DATA_AGE_MS", readNumber(env, "MAX_STALE_DATA_MS", 300)),
+    maxStaleDataMs: readNumber(
+      env,
+      "MAX_STALE_DATA_MS",
+      readNumber(env, "MAX_DATA_AGE_MS", defaultMaxDataAgeMs(mode))
+    ),
+    maxDataAgeMs: readNumber(
+      env,
+      "MAX_DATA_AGE_MS",
+      readNumber(env, "MAX_STALE_DATA_MS", defaultMaxDataAgeMs(mode))
+    ),
     maxTotalLatencyMs: readNumber(env, "MAX_TOTAL_LATENCY_MS", 1000),
     latencyPenaltyBpsPerSecond: readNumber(env, "LATENCY_PENALTY_BPS_PER_SECOND", 5),
     minRealEdge: readNumber(env, "MIN_REAL_EDGE", readNumber(env, "MIN_NET_EDGE", 0.025)),
@@ -154,6 +169,11 @@ export function loadConfigFromEnv(env: EnvSource = process.env): BotConfig {
     stopAfterConsecutiveLosses: readNumber(env, "STOP_AFTER_CONSECUTIVE_LOSSES", 3),
     minNetArbEdge: readNumber(env, "MIN_NET_ARB_EDGE", readNumber(env, "MIN_NET_EDGE", 0.025)),
     minNetEdge: readNumber(env, "MIN_NET_EDGE", readNumber(env, "MIN_NET_ARB_EDGE", 0.025)),
+    paperScoutMode: readBool(env, "PAPER_SCOUT_MODE", false),
+    paperScoutMaxNegativeEdge: readNumber(env, "PAPER_SCOUT_MAX_NEGATIVE_EDGE", 0.015),
+    paperScoutMaxSpread: readNumber(env, "PAPER_SCOUT_MAX_SPREAD", 0.025),
+    paperScoutIntervalSeconds: readNumber(env, "PAPER_SCOUT_INTERVAL_SECONDS", 60),
+    paperScoutMaxOpenTrades: readNumber(env, "PAPER_SCOUT_MAX_OPEN_TRADES", 1),
     minOrderBookDepthUsd: readNumber(env, "MIN_ORDER_BOOK_DEPTH_USD", 25),
     minDepthMultiplier: readNumber(env, "MIN_DEPTH_MULTIPLIER", 5),
     requireBothLegsFillable: readBool(env, "REQUIRE_BOTH_LEGS_FILLABLE", true),

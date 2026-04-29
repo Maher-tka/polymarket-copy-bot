@@ -97,6 +97,11 @@ export interface BotConfig {
   stopAfterConsecutiveLosses: number;
   minNetArbEdge: number;
   minNetEdge: number;
+  paperScoutMode: boolean;
+  paperScoutMaxNegativeEdge: number;
+  paperScoutMaxSpread: number;
+  paperScoutIntervalSeconds: number;
+  paperScoutMaxOpenTrades: number;
   minOrderBookDepthUsd: number;
   minDepthMultiplier: number;
   requireBothLegsFillable: boolean;
@@ -550,6 +555,7 @@ export interface StrategyOpportunity {
   secondsToClose?: number;
   projectedLockedProfitUsd?: number;
   failedFillRiskUsd?: number;
+  paperScout?: boolean;
 }
 
 export interface StrategyRejection {
@@ -588,6 +594,7 @@ export interface StrategyPaperTrade {
   marketEndDate?: string;
   secondsToClose?: number;
   failedHedge?: boolean;
+  paperScout?: boolean;
   rejectionReason?: string;
   lossReason?: string;
   lossCause?: LossCause;

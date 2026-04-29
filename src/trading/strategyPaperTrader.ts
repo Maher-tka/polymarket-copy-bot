@@ -134,6 +134,7 @@ export class StrategyPaperTrader {
       noTokenId: input.opportunity.noTokenId,
       marketEndDate: input.opportunity.marketEndDate,
       secondsToClose: input.opportunity.secondsToClose,
+      paperScout: input.opportunity.paperScout,
       openedAt: new Date().toISOString()
     };
 

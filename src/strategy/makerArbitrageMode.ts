@@ -7,15 +7,18 @@ import {
   bestBid,
   calculateBinaryTakerFeeUsd,
   effectiveTakerFeeRate,
-  isInsideFinalEntryWindow,
+  isInsideCandidateFinalEntryWindow,
   orderBookAgeMs,
   secondsUntilClose,
+  secondsUntilCandidateClose,
   simulateOrderBookFill,
   spread
 } from "./orderBookMath";
 import { StrategyStateStore } from "./strategyState";
 
 export class MakerArbitrageMode {
+  private readonly staleCooldownUntil = new Map<string, number>();
+
   constructor(
     private readonly clobClient: Pick<ClobPublicClient, "getOrderBook">,
     private readonly store: StrategyStateStore,
@@ -44,11 +47,30 @@ export class MakerArbitrageMode {
   async tick(candidates: BinaryMarketCandidate[], portfolio: PortfolioSnapshot): Promise<void> {
     await this.cancelOrFillOpenOrders();
 
-    for (const candidate of candidates.slice(0, 8)) {
-      const [yesBook, noBook] = await Promise.all([
-        this.clobClient.getOrderBook(candidate.yesTokenId),
-        this.clobClient.getOrderBook(candidate.noTokenId)
+    const now = Date.now();
+    const activeCandidates = candidates
+      .filter((candidate) => !isInsideCandidateFinalEntryWindow(candidate, this.config.finalEntryBufferSeconds, now))
+      .filter((candidate) => !this.isCoolingDown(candidate.conditionId, now));
+
+    for (const candidate of activeCandidates.slice(0, 8)) {
+      const books = await Promise.all([
+        this.clobClient.getOrderBook(candidate.yesTokenId).catch((error) => {
+          logger.debug("Maker arbitrage skipped candidate with unreadable YES book.", {
+            market: candidate.title,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return undefined;
+        }),
+        this.clobClient.getOrderBook(candidate.noTokenId).catch((error) => {
+          logger.debug("Maker arbitrage skipped candidate with unreadable NO book.", {
+            market: candidate.title,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return undefined;
+        })
       ]);
+      const [yesBook, noBook] = books;
+      if (!yesBook || !noBook) continue;
       const yesBid = bestBid(yesBook);
       const yesAsk = bestAsk(yesBook);
       const noBid = bestBid(noBook);
@@ -85,8 +107,11 @@ export class MakerArbitrageMode {
       );
       const bookDepthUsd = Math.min(depthUsd(yesBook.asks), hedgeFill.depthUsd);
       const reasons: string[] = [];
-      if (maxAgeMs > this.config.maxDataAgeMs) reasons.push(`Stale order book data: ${Math.round(maxAgeMs)}ms old.`);
-      if (isInsideFinalEntryWindow(candidate.endDate, this.config.finalEntryBufferSeconds)) {
+      if (maxAgeMs > this.config.maxDataAgeMs) {
+        reasons.push(`Stale order book data: ${Math.round(maxAgeMs)}ms old.`);
+        this.coolDownStaleCandidate(candidate.conditionId, maxAgeMs);
+      }
+      if (isInsideCandidateFinalEntryWindow(candidate, this.config.finalEntryBufferSeconds)) {
         reasons.push(`Market is inside final ${this.config.finalEntryBufferSeconds}s entry buffer.`);
       }
       if (makerLimit <= 0) reasons.push("Post-only maker price is not valid.");
@@ -123,8 +148,8 @@ export class MakerArbitrageMode {
         fillRate: round(hedgeFill.fillRate),
         partialFill: hedgeFill.partial,
         failedFill: hedgeFill.filledShares <= 0,
-        secondsToClose: roundOptional(secondsUntilClose(candidate.endDate)),
-        tooCloseToClose: isInsideFinalEntryWindow(candidate.endDate, this.config.finalEntryBufferSeconds),
+        secondsToClose: roundOptional(secondsUntilCandidateClose(candidate)),
+        tooCloseToClose: isInsideCandidateFinalEntryWindow(candidate, this.config.finalEntryBufferSeconds),
         lossCause: lossCauseForReasons(reasons),
         createdAt: new Date().toISOString()
       });
@@ -200,12 +225,27 @@ export class MakerArbitrageMode {
         continue;
       }
 
-      const book = await this.clobClient.getOrderBook(order.tokenId);
+      const book = await this.clobClient.getOrderBook(order.tokenId).catch((error) => {
+        logger.debug("Maker arbitrage skipped open order with unreadable book.", {
+          orderId: order.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        return undefined;
+      });
+      if (!book) continue;
       const ask = bestAsk(book);
       if (ask === undefined || ask > order.limitPrice) continue;
 
       const fill = makerFill(order.limitPrice, order.shares, this.config.makerFeeRate);
-      const hedgeBook = order.hedgeTokenId ? await this.clobClient.getOrderBook(order.hedgeTokenId) : undefined;
+      const hedgeBook = order.hedgeTokenId
+        ? await this.clobClient.getOrderBook(order.hedgeTokenId).catch((error) => {
+            logger.debug("Maker arbitrage hedge book unavailable.", {
+              orderId: order.id,
+              error: error instanceof Error ? error.message : String(error)
+            });
+            return undefined;
+          })
+        : undefined;
       const takerFeeRate = effectiveTakerFeeRate({ title: order.marketTitle }, this.config);
       const hedgeFill = hedgeBook
         ? simulateOrderBookFill(hedgeBook, "BUY", order.shares, takerFeeRate)
@@ -252,6 +292,21 @@ export class MakerArbitrageMode {
         logger.info("Simulated maker arbitrage order filled and hedged.", { orderId: order.id, fillRate: hedgeFill.fillRate });
       }
     }
+  }
+
+  private isCoolingDown(conditionId: string, now = Date.now()): boolean {
+    const until = this.staleCooldownUntil.get(conditionId);
+    if (!until) return false;
+    if (until <= now) {
+      this.staleCooldownUntil.delete(conditionId);
+      return false;
+    }
+    return true;
+  }
+
+  private coolDownStaleCandidate(conditionId: string, ageMs: number): void {
+    const cooldownMs = Math.min(5 * 60_000, Math.max(30_000, Math.round(ageMs)));
+    this.staleCooldownUntil.set(conditionId, Date.now() + cooldownMs);
   }
 }
 

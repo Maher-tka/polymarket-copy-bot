@@ -59,6 +59,7 @@ export function buildLosingDiagnostics(input: {
   const sortedStrategies = [...strategyPnl.entries()].sort((a, b) => b[1] - a[1]);
   const sortedTrades = [...trades].sort((a, b) => tradePnl(a) - tradePnl(b));
   const rejectedDiagnostics = diagnostics.filter((item) => !item.accepted);
+  const liveDiagnostics = diagnostics.slice(0, 50);
   const lossCauses = [...diagnostics.map((item) => item.lossCause), ...trades.map((trade) => trade.lossCause ?? classifyTradeLoss(trade))];
   const strategyRanking = STRATEGIES.map((strategy) => {
     const strategyTrades = trades.filter((trade) => trade.strategy === strategy);
@@ -100,7 +101,7 @@ export function buildLosingDiagnostics(input: {
     };
   }).sort((a, b) => b.expectancyPerTrade - a.expectancyPerTrade || b.netPnlUsd - a.netPnlUsd);
   const overallExpectancy = expectancyStats(trades, diagnostics);
-  const staleDataCount = diagnostics.filter((item) => item.dataAgeMs !== undefined && item.dataAgeMs > 1000).length;
+  const staleDataCount = liveDiagnostics.filter((item) => item.dataAgeMs !== undefined && item.dataAgeMs > 1000).length;
 
   return {
     totalSignals: Math.max(diagnostics.length, rejections.length + trades.length),
@@ -118,7 +119,7 @@ export function buildLosingDiagnostics(input: {
     estimatedFeesUsd: round(diagnostics.reduce((total, item) => total + (item.estimatedFeesUsd ?? 0), 0)),
     estimatedSlippageUsd: round(diagnostics.reduce((total, item) => total + (item.estimatedSlippageUsd ?? 0), 0)),
     averageSpread: round(average(diagnostics.map((item) => item.spread))),
-    averageDataDelayMs: round(average(diagnostics.map((item) => item.dataAgeMs))),
+    averageDataDelayMs: round(average(liveDiagnostics.map((item) => item.dataAgeMs))),
     failedFills: diagnostics.filter((item) => item.failedFill).length + trades.filter((trade) => trade.fillRate <= 0).length,
     partialFills: diagnostics.filter((item) => item.partialFill).length + trades.filter((trade) => trade.fillRate > 0 && trade.fillRate < 1).length,
     failedHedges: diagnostics.filter((item) => item.failedHedge).length + trades.filter((trade) => trade.failedHedge).length,
@@ -138,10 +139,10 @@ export function buildLosingDiagnostics(input: {
     profitFactor: overallExpectancy.profitFactor,
     expectancyPerTrade: overallExpectancy.expectancyPerTrade,
     latencyAdjustedPnlUsd: overallExpectancy.latencyAdjustedPnlUsd,
-    latencyAverageMs: round(average(diagnostics.map((item) => item.totalLatencyMs))),
-    latencyP95Ms: round(percentile(diagnostics.map((item) => item.totalLatencyMs), 0.95)),
+    latencyAverageMs: round(average(liveDiagnostics.map((item) => item.totalLatencyMs))),
+    latencyP95Ms: round(percentile(liveDiagnostics.map((item) => item.totalLatencyMs), 0.95)),
     staleDataCount,
-    staleDataPct: diagnostics.length > 0 ? round(staleDataCount / diagnostics.length) : 0,
+    staleDataPct: liveDiagnostics.length > 0 ? round(staleDataCount / liveDiagnostics.length) : 0,
     misleadingWinRateWarning: overallExpectancy.misleadingWinRateWarning,
     worstTrade: sortedTrades[0],
     bestTrade: sortedTrades[sortedTrades.length - 1],

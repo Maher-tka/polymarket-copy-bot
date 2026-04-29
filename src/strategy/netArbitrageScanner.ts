@@ -6,6 +6,7 @@ import {
   BinaryMarketCandidate,
   BotConfig,
   FillSimulation,
+  OrderBook,
   PortfolioSnapshot,
   StrategyOpportunity,
   StrategyRejection
@@ -15,9 +16,9 @@ import {
   bestBid,
   calculateBinaryTakerFeeUsd,
   effectiveTakerFeeRate,
-  isInsideFinalEntryWindow,
+  isInsideCandidateFinalEntryWindow,
   orderBookAgeMs,
-  secondsUntilClose,
+  secondsUntilCandidateClose,
   simulateOrderBookFill,
   spread
 } from "./orderBookMath";
@@ -25,16 +26,25 @@ import { StrategyStateStore } from "./strategyState";
 import { latencyPenaltyEdge } from "../latency/latencyEngine";
 
 export class NetArbitrageScanner {
+  private readonly staleCooldownUntil = new Map<string, number>();
+  private lastScoutTradeAt = 0;
+
   constructor(
-    private readonly clobClient: Pick<ClobPublicClient, "getOrderBook">,
+    private readonly clobClient: Pick<ClobPublicClient, "getOrderBook"> & Partial<Pick<ClobPublicClient, "getOrderBooks">>,
     private readonly store: StrategyStateStore,
     private readonly execution: StrategyExecutionPort,
     private readonly risk: StrategyRiskManager,
     private readonly config: Pick<
       BotConfig,
+      | "paperTradingOnly"
       | "minNetArbEdge"
       | "minOrderBookDepthUsd"
       | "minDepthMultiplier"
+      | "paperScoutMode"
+      | "paperScoutMaxNegativeEdge"
+      | "paperScoutMaxSpread"
+      | "paperScoutIntervalSeconds"
+      | "paperScoutMaxOpenTrades"
       | "maxStaleDataMs"
       | "maxDataAgeMs"
       | "maxSpread"
@@ -55,7 +65,17 @@ export class NetArbitrageScanner {
   async scan(candidates: BinaryMarketCandidate[], portfolio: PortfolioSnapshot): Promise<void> {
     const started = Date.now();
     let scanned = 0;
-    const scanCandidates = candidates.slice(0, 16);
+    const now = Date.now();
+
+    for (const candidate of candidates.filter((item) => isInsideCandidateFinalEntryWindow(item, this.config.finalEntryBufferSeconds, now))) {
+      this.rejectWithoutOrderBook(candidate, [`Market is inside final ${this.config.finalEntryBufferSeconds}s entry buffer.`]);
+    }
+
+    const scanCandidates = candidates
+      .filter((candidate) => !isInsideCandidateFinalEntryWindow(candidate, this.config.finalEntryBufferSeconds, now))
+      .filter((candidate) => !this.isCoolingDown(candidate.conditionId, now))
+      .slice(0, 16);
+    const batchedBooks = await this.loadBatchedBooks(scanCandidates);
 
     // Small batches cut scan latency without hammering the public CLOB API with
     // every token request at once.
@@ -63,7 +83,7 @@ export class NetArbitrageScanner {
       scanned += batch.length;
       await Promise.all(
         batch.map((candidate) =>
-          this.scanCandidate(candidate, portfolio, started).catch((error) => {
+          this.scanCandidate(candidate, portfolio, started, batchedBooks).catch((error) => {
             this.reject(candidate, [error instanceof Error ? error.message : String(error)]);
           })
         )
@@ -76,16 +96,26 @@ export class NetArbitrageScanner {
   private async scanCandidate(
     candidate: BinaryMarketCandidate,
     portfolio: PortfolioSnapshot,
-    scanStartedAt: number
+    scanStartedAt: number,
+    batchedBooks?: Map<string, OrderBook>
   ): Promise<void> {
-    const [yesBook, noBook] = await Promise.all([
-      this.clobClient.getOrderBook(candidate.yesTokenId),
-      this.clobClient.getOrderBook(candidate.noTokenId)
-    ]);
+    const [yesBook, noBook] = batchedBooks
+      ? [batchedBooks.get(candidate.yesTokenId), batchedBooks.get(candidate.noTokenId)]
+      : await Promise.all([
+          this.clobClient.getOrderBook(candidate.yesTokenId),
+          this.clobClient.getOrderBook(candidate.noTokenId)
+        ]);
+
+    if (!yesBook || !noBook) {
+      this.coolDownStaleCandidate(candidate.conditionId, 5 * 60_000);
+      this.rejectWithoutOrderBook(candidate, ["Missing batched order book response from CLOB API."]);
+      return;
+    }
 
     const yesAgeMs = orderBookAgeMs(yesBook);
     const noAgeMs = orderBookAgeMs(noBook);
     const maxAgeMs = Math.max(yesAgeMs, noAgeMs);
+    const staleLimitMs = Math.min(this.config.maxDataAgeMs, this.config.maxStaleDataMs);
     const yesBid = bestBid(yesBook);
     const yesAsk = bestAsk(yesBook);
     const noBid = bestBid(noBook);
@@ -94,6 +124,7 @@ export class NetArbitrageScanner {
 
     if (yesBid === undefined || yesAsk === undefined || noBid === undefined || noAsk === undefined) {
       const reasons = ["Missing YES/NO top-of-book price."];
+      if (maxAgeMs > staleLimitMs) this.coolDownStaleCandidate(candidate.conditionId, maxAgeMs);
       this.reject(candidate, reasons);
       this.store.addDiagnostic({
         id: `diag-net-arb-${candidate.conditionId}-${Date.now()}`,
@@ -149,6 +180,7 @@ export class NetArbitrageScanner {
     });
 
     const reasons = this.rejectionReasons(candidate, opportunity, yesFill, noFill, maxAgeMs, pairSpread, intendedCapitalUsd, totalLatencyMs);
+    if (maxAgeMs > staleLimitMs) this.coolDownStaleCandidate(candidate.conditionId, maxAgeMs);
     reasons.push(
       ...this.risk.evaluate(
         opportunity,
@@ -158,6 +190,16 @@ export class NetArbitrageScanner {
         Math.max(yesFill.slippagePct, noFill.slippagePct)
       )
     );
+    const scoutReason = this.paperScoutReason({
+      opportunity,
+      reasons,
+      yesFill,
+      noFill,
+      maxAgeMs,
+      pairSpread,
+      now: Date.now()
+    });
+    const accepted = reasons.length === 0 || scoutReason !== undefined;
 
     const diagnostic = {
       id: `diag-net-arb-${opportunity.id}`,
@@ -177,22 +219,38 @@ export class NetArbitrageScanner {
       estimatedSlippageUsd: round(yesFill.slippageUsd + noFill.slippageUsd),
       netEdge: opportunity.edge,
       realEdge: opportunity.realEdge,
-      accepted: reasons.length === 0,
-      rejectionReasons: reasons,
+      accepted,
+      rejectionReasons: scoutReason ? [] : reasons,
       simulatedEntryPrice: opportunity.netCost,
       simulatedExitValue: round(Math.min(yesFill.filledShares, noFill.filledShares)),
       fillRate: round(Math.min(yesFill.fillRate, noFill.fillRate)),
       partialFill: yesFill.partial || noFill.partial,
       failedFill: yesFill.filledShares <= 0 || noFill.filledShares <= 0,
-      secondsToClose: roundOptional(secondsUntilClose(candidate.endDate)),
-      tooCloseToClose: isInsideFinalEntryWindow(candidate.endDate, this.config.finalEntryBufferSeconds),
+      secondsToClose: roundOptional(secondsUntilCandidateClose(candidate)),
+      tooCloseToClose: isInsideCandidateFinalEntryWindow(candidate, this.config.finalEntryBufferSeconds),
       lossCause: lossCauseForReasons(reasons),
       totalLatencyMs: round(totalLatencyMs),
       latencyPenaltyUsd: opportunity.latencyPenaltyUsd,
       latencyAdjustedPnlUsd: round((opportunity.realEdge ?? opportunity.edge) * Math.min(yesFill.filledShares, noFill.filledShares)),
+      reasonForLoss: scoutReason,
       createdAt: new Date().toISOString()
     };
     this.store.addDiagnostic(diagnostic);
+
+    if (scoutReason) {
+      this.lastScoutTradeAt = Date.now();
+      const scoutOpportunity = { ...opportunity, status: "filled" as const, reason: scoutReason, paperScout: true };
+      this.store.addOpportunity(scoutOpportunity);
+      const trade = this.execution.executePairedArbitrage(scoutOpportunity, yesFill, noFill);
+      this.risk.recordFill(trade.fillRate);
+      logger.info("Paper scout mode accepted near-miss net arbitrage quote.", {
+        market: candidate.title,
+        edge: opportunity.edge,
+        pairSpread: round(pairSpread),
+        reason: scoutReason
+      });
+      return;
+    }
 
     if (reasons.length > 0) {
       this.store.addOpportunity({ ...opportunity, status: "rejected", reason: reasons.join(" | ") });
@@ -227,7 +285,7 @@ export class NetArbitrageScanner {
       yesTokenId: candidate.yesTokenId,
       noTokenId: candidate.noTokenId,
       marketEndDate: candidate.endDate,
-      secondsToClose: roundOptional(secondsUntilClose(candidate.endDate)),
+      secondsToClose: roundOptional(secondsUntilCandidateClose(candidate)),
       rawCost: round(rawCost),
       estimatedTakerFees: round(estimatedTakerFees),
       estimatedSlippage: round(estimatedSlippage),
@@ -255,7 +313,7 @@ export class NetArbitrageScanner {
     const reasons: string[] = [];
     const maxAge = Math.min(this.config.maxDataAgeMs, this.config.maxStaleDataMs);
     if (maxAgeMs > maxAge) reasons.push(`Stale order book data: ${Math.round(maxAgeMs)}ms old.`);
-    if (isInsideFinalEntryWindow(candidate.endDate, this.config.finalEntryBufferSeconds)) {
+    if (isInsideCandidateFinalEntryWindow(candidate, this.config.finalEntryBufferSeconds)) {
       reasons.push(`Market is inside final ${this.config.finalEntryBufferSeconds}s entry buffer.`);
     }
     if ((opportunity.edge ?? 0) < this.config.minNetArbEdge) reasons.push("Net edge is below MIN_NET_ARB_EDGE after costs.");
@@ -277,6 +335,36 @@ export class NetArbitrageScanner {
     return reasons;
   }
 
+  private paperScoutReason(input: {
+    opportunity: StrategyOpportunity;
+    reasons: string[];
+    yesFill: FillSimulation;
+    noFill: FillSimulation;
+    maxAgeMs: number;
+    pairSpread: number;
+    now: number;
+  }): string | undefined {
+    if (!this.config.paperScoutMode || !this.config.paperTradingOnly) return undefined;
+    if (input.reasons.length === 0 || !input.reasons.every(isPaperScoutOverridableReason)) return undefined;
+    if ((input.opportunity.edge ?? 0) < -Math.abs(this.config.paperScoutMaxNegativeEdge)) return undefined;
+    if (input.pairSpread > this.config.paperScoutMaxSpread) return undefined;
+    if (input.maxAgeMs > Math.min(this.config.maxDataAgeMs, this.config.maxStaleDataMs)) return undefined;
+    if (input.yesFill.fillRate < 1 || input.noFill.fillRate < 1 || input.yesFill.partial || input.noFill.partial) return undefined;
+    if (input.yesFill.filledShares <= 0 || input.noFill.filledShares <= 0) return undefined;
+
+    const intervalMs = Math.max(0, this.config.paperScoutIntervalSeconds * 1000);
+    if (input.now - this.lastScoutTradeAt < intervalMs) return undefined;
+
+    const maxOpenScoutTrades = Math.max(0, Math.floor(this.config.paperScoutMaxOpenTrades));
+    if (maxOpenScoutTrades <= 0) return undefined;
+    const openScoutTrades = this.store
+      .getState()
+      .paperTrades.filter((trade) => trade.strategy === "net-arbitrage" && !trade.closedAt && trade.edge <= 0).length;
+    if (openScoutTrades >= maxOpenScoutTrades) return undefined;
+
+    return `Paper scout mode: near-miss learning trade accepted despite ${input.reasons.join(" | ")}`;
+  }
+
   private reject(candidate: BinaryMarketCandidate, reasons: string[], edge?: number): void {
     const rejection: StrategyRejection = {
       id: `reject-net-arb-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -289,6 +377,50 @@ export class NetArbitrageScanner {
     };
     this.store.addRejection(rejection);
     logger.info("Net arbitrage rejected.", { market: candidate.title, reasons, edge });
+  }
+
+  private rejectWithoutOrderBook(candidate: BinaryMarketCandidate, reasons: string[]): void {
+    this.store.addDiagnostic({
+      id: `diag-net-arb-prebook-${candidate.conditionId}-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      market: candidate.title,
+      strategy: "net-arbitrage",
+      accepted: false,
+      rejectionReasons: reasons,
+      secondsToClose: roundOptional(secondsUntilCandidateClose(candidate)),
+      tooCloseToClose: isInsideCandidateFinalEntryWindow(candidate, this.config.finalEntryBufferSeconds),
+      lossCause: lossCauseForReasons(reasons),
+      createdAt: new Date().toISOString()
+    });
+    this.reject(candidate, reasons);
+  }
+
+  private async loadBatchedBooks(candidates: BinaryMarketCandidate[]): Promise<Map<string, OrderBook> | undefined> {
+    if (candidates.length === 0) return undefined;
+    if (!this.clobClient.getOrderBooks) return undefined;
+    try {
+      return await this.clobClient.getOrderBooks(candidates.flatMap((candidate) => [candidate.yesTokenId, candidate.noTokenId]));
+    } catch (error) {
+      logger.warn("Batch CLOB order book fetch failed; falling back to per-token reads.", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return undefined;
+    }
+  }
+
+  private isCoolingDown(conditionId: string, now = Date.now()): boolean {
+    const until = this.staleCooldownUntil.get(conditionId);
+    if (!until) return false;
+    if (until <= now) {
+      this.staleCooldownUntil.delete(conditionId);
+      return false;
+    }
+    return true;
+  }
+
+  private coolDownStaleCandidate(conditionId: string, ageMs: number): void {
+    const cooldownMs = Math.min(5 * 60_000, Math.max(30_000, Math.round(ageMs)));
+    this.staleCooldownUntil.set(conditionId, Date.now() + cooldownMs);
   }
 }
 
@@ -310,6 +442,10 @@ function lossCauseForReasons(reasons: string[]) {
   if (text.includes("slippage") || text.includes("spread")) return "slippage" as const;
   if (text.includes("edge")) return "negative-edge" as const;
   return undefined;
+}
+
+function isPaperScoutOverridableReason(reason: string): boolean {
+  return reason === "Net edge is below MIN_NET_ARB_EDGE after costs." || reason === "YES/NO combined spread exceeds MAX_SPREAD.";
 }
 
 function chunks<T>(items: T[], size: number): T[][] {

@@ -11,6 +11,7 @@ describe("settings", () => {
     expect(config.enableLiveTrading).toBe(false);
     expect(config.realTradingEnabled).toBe(false);
     expect(config.liveTrading).toBe(false);
+    expect(config.paperScoutMode).toBe(false);
   });
 
   it("rejects unknown modes", () => {
@@ -39,5 +40,21 @@ describe("settings", () => {
     expect(config.liveTrading).toBe(true);
     expect(config.maxTradeSizeUsdc).toBe(3);
     expect(config.maxDailyLossUsdc).toBe(7);
+  });
+
+  it("parses paper scout mode controls without enabling it by default", () => {
+    const config = loadConfigFromEnv({
+      PAPER_SCOUT_MODE: "true",
+      PAPER_SCOUT_MAX_NEGATIVE_EDGE: "0.012",
+      PAPER_SCOUT_MAX_SPREAD: "0.021",
+      PAPER_SCOUT_INTERVAL_SECONDS: "15",
+      PAPER_SCOUT_MAX_OPEN_TRADES: "2"
+    });
+
+    expect(config.paperScoutMode).toBe(true);
+    expect(config.paperScoutMaxNegativeEdge).toBe(0.012);
+    expect(config.paperScoutMaxSpread).toBe(0.021);
+    expect(config.paperScoutIntervalSeconds).toBe(15);
+    expect(config.paperScoutMaxOpenTrades).toBe(2);
   });
 });

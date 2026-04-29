@@ -122,4 +122,57 @@ describe("StrategyRiskManager", () => {
     expect(reasons.join(" ")).toContain("MAX_TRADE_SIZE_USD");
     expect(reasons.join(" ")).toContain("slippage");
   });
+
+  it("stops after consecutive real strategy losses", () => {
+    const risk = new StrategyRiskManager(config, new RiskManager(config));
+    const reasons = risk.evaluate(opportunity, portfolio, { ...state, paperTrades: [loss("1"), loss("2"), loss("3")] }, 1, 0.001);
+
+    expect(reasons.join(" ")).toContain("Stop-after-consecutive-losses");
+  });
+
+  it("does not let paper scout learning losses freeze the strategy engine", () => {
+    const risk = new StrategyRiskManager(config, new RiskManager(config));
+    const reasons = risk.evaluate(
+      opportunity,
+      portfolio,
+      {
+        ...state,
+        opportunities: [
+          { ...opportunity, id: "scout-legacy", reason: "Paper scout mode: near-miss learning trade accepted despite edge.", paperScout: true }
+        ],
+        paperTrades: [
+          loss("1", true),
+          loss("2", true),
+          { ...loss("3"), opportunityId: "scout-legacy" },
+          { ...loss("4"), lossReason: "Negative edge after costs." }
+        ]
+      },
+      1,
+      0.001
+    );
+
+    expect(reasons.join(" ")).not.toContain("Stop-after-consecutive-losses");
+  });
 });
+
+function loss(id: string, paperScout = false): StrategyEngineState["paperTrades"][number] {
+  return {
+    id,
+    strategy: "net-arbitrage",
+    conditionId: "condition",
+    side: "ARBITRAGE_PAIR",
+    shares: 1,
+    entryCostUsd: 1,
+    grossPnlUsd: -0.01,
+    realizedPnlUsd: -0.01,
+    unrealizedPnlUsd: 0,
+    feesUsd: 0,
+    slippageUsd: 0,
+    edge: -0.01,
+    fillRate: 1,
+    status: "filled",
+    openedAt: new Date(Date.now() - Number(id) * 1000).toISOString(),
+    closedAt: new Date(Date.now() - Number(id) * 1000).toISOString(),
+    paperScout
+  };
+}
