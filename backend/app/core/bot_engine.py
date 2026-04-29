@@ -285,11 +285,10 @@ class BotEngine:
     def _sync_executor_state(self) -> None:
         self.state.state.balance = round(self.paper_executor.cash, 4)
         self.state.state.nav = round(self.paper_executor.nav, 4)
-        self.state.state.positions = [
-            {"market_id": key, **value}
-            for key, value in self.paper_executor.positions.items()
-        ]
+        self.state.state.positions = self._position_snapshots()
         self.state.state.trades = list(reversed(self.paper_executor.trades[-100:]))
+        self.state.state.win_loss_history = self._win_loss_history()
+        self.state.state.performance_summary = self._performance_summary(self.state.state.win_loss_history)
         self.state.state.blocked_reasons = list(self.circuit_breaker.blocked_reasons)
         self.state.state.websocket_connected = self.market_ws.connected
         self.state.state.websocket_last_message_age_seconds = self._websocket_message_age()
@@ -317,6 +316,64 @@ class BotEngine:
                 continue
             exposure[group] = exposure.get(group, 0.0) + value["cost_basis"]
         return exposure
+
+    def _position_snapshots(self) -> list[dict]:
+        snapshots = []
+        for key, value in self.paper_executor.positions.items():
+            cost_basis = float(value.get("cost_basis", 0.0))
+            market_value = float(value.get("market_value", 0.0))
+            pnl = float(value.get("unrealized_pnl", market_value - cost_basis - float(value.get("fees_paid", 0.0))))
+            snapshots.append(
+                {
+                    "market_id": key,
+                    **value,
+                    "unrealized_pnl": round(pnl, 4),
+                    "pnl_pct": round(pnl / cost_basis, 4) if cost_basis else 0.0,
+                    "win_loss": value.get("win_loss") or classify_pnl(pnl),
+                }
+            )
+        return sorted(snapshots, key=lambda item: item.get("opened_at", 0), reverse=True)
+
+    def _win_loss_history(self) -> list[dict]:
+        history = []
+        for position in self._position_snapshots():
+            history.append(
+                {
+                    "type": "OPEN_POSITION",
+                    "status": position.get("win_loss", "BREAKEVEN"),
+                    "market_id": position["market_id"],
+                    "question": position.get("question") or position["market_id"],
+                    "side": position.get("side"),
+                    "shares": position.get("shares", 0.0),
+                    "avg_price": position.get("avg_price", 0.0),
+                    "current_price": position.get("current_price", 0.0),
+                    "cost_basis": position.get("cost_basis", 0.0),
+                    "market_value": position.get("market_value", 0.0),
+                    "pnl": position.get("unrealized_pnl", 0.0),
+                    "pnl_pct": position.get("pnl_pct", 0.0),
+                    "opened_at": position.get("opened_at"),
+                    "last_updated_at": position.get("last_updated_at"),
+                }
+            )
+        return history[:100]
+
+    def _performance_summary(self, history: list[dict]) -> dict:
+        wins = [item for item in history if item.get("status") == "WIN"]
+        losses = [item for item in history if item.get("status") == "LOSS"]
+        breakeven = [item for item in history if item.get("status") == "BREAKEVEN"]
+        total_pnl = sum(float(item.get("pnl", 0.0)) for item in history)
+        largest_win = max((float(item.get("pnl", 0.0)) for item in wins), default=0.0)
+        largest_loss = min((float(item.get("pnl", 0.0)) for item in losses), default=0.0)
+        decided = len(wins) + len(losses)
+        return {
+            "open_wins": len(wins),
+            "open_losses": len(losses),
+            "open_breakeven": len(breakeven),
+            "open_win_rate": round(len(wins) / decided, 4) if decided else 0.0,
+            "open_unrealized_pnl": round(total_pnl, 4),
+            "largest_open_win": round(largest_win, 4),
+            "largest_open_loss": round(largest_loss, 4),
+        }
 
     def _websocket_message_age(self) -> float | None:
         if not self.market_ws.last_message_at:
@@ -354,3 +411,11 @@ def primary_signal(components: dict[str, float]) -> str:
     if not components:
         return "aggregator"
     return max(components.items(), key=lambda item: abs(item[1]))[0]
+
+
+def classify_pnl(pnl: float) -> str:
+    if pnl > 0.01:
+        return "WIN"
+    if pnl < -0.01:
+        return "LOSS"
+    return "BREAKEVEN"

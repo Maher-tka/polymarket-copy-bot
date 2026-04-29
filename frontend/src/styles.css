@@ -373,6 +373,10 @@ td span {
   grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
 }
 
+.contentGrid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .contentGrid.scanner {
   grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
 }
@@ -476,6 +480,66 @@ td span {
 .badge.danger {
   border-color: #80313a;
   color: #fecaca;
+}
+
+.historySummary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-bottom: 0.9rem;
+}
+
+.miniStat {
+  border: 1px solid #28313f;
+  border-radius: 8px;
+  background: #151922;
+  padding: 0.65rem;
+}
+
+.miniStat span {
+  display: block;
+  color: #9aa4b2;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.miniStat strong {
+  display: block;
+  margin-top: 0.2rem;
+}
+
+.miniStat.positive strong,
+.pnlPositive {
+  color: #86efac;
+}
+
+.miniStat.negative strong,
+.pnlNegative {
+  color: #fecaca;
+}
+
+.outcomeBadge {
+  display: inline-flex;
+  width: max-content;
+  border: 1px solid #313b49;
+  border-radius: 999px;
+  padding: 0.28rem 0.52rem;
+  font-weight: 900;
+}
+
+.outcomeBadge.win {
+  border-color: #1f7a54;
+  color: #86efac;
+}
+
+.outcomeBadge.loss {
+  border-color: #80313a;
+  color: #fecaca;
+}
+
+.outcomeBadge.flat {
+  color: #fde68a;
 }
 
 .blockList {
@@ -616,6 +680,7 @@ td span {
 
   .contentGrid.primary,
   .contentGrid.scanner,
+  .contentGrid.single,
   .statGrid {
     grid-template-columns: 1fr 1fr;
   }
@@ -664,8 +729,10 @@ td span {
 
   .contentGrid.primary,
   .contentGrid.scanner,
+  .contentGrid.single,
   .statGrid,
-  .signalHero {
+  .signalHero,
+  .historySummary {
     grid-template-columns: 1fr;
   }
 

@@ -17,6 +17,8 @@ class RuntimeState:
     positions: list[dict] = field(default_factory=list)
     open_orders: list[dict] = field(default_factory=list)
     trades: list[dict] = field(default_factory=list)
+    win_loss_history: list[dict] = field(default_factory=list)
+    performance_summary: dict = field(default_factory=dict)
     logs: deque[str] = field(default_factory=lambda: deque(maxlen=200))
     last_decisions: list[dict] = field(default_factory=list)
     websocket_connected: bool = False

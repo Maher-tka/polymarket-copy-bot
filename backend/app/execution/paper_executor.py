@@ -32,14 +32,30 @@ class PaperExecutor(Executor):
             return {"status": "SKIPPED", "reason": "No simulated fill."}
         self.cash -= fill.filled_usd + fill.fees_usd
         position_key = market.id if decision.decision == Decision.BUY_YES else f"{market.id}:NO"
-        position = self.positions.get(position_key, {"shares": 0.0, "cost_basis": 0.0, "market_value": 0.0, "side": decision.decision.value})
+        position = self.positions.get(
+            position_key,
+            {
+                "shares": 0.0,
+                "cost_basis": 0.0,
+                "market_value": 0.0,
+                "side": decision.decision.value,
+                "question": market.question,
+                "opened_at": time.time(),
+                "fees_paid": 0.0,
+                "slippage_usd": 0.0,
+            },
+        )
+        position["question"] = position.get("question") or market.question
         position["shares"] += fill.shares
         position["cost_basis"] += fill.filled_usd
-        position["market_value"] = position["shares"] * (execution_book.mid_price or fill.avg_price)
+        position["fees_paid"] = position.get("fees_paid", 0.0) + fill.fees_usd
+        position["slippage_usd"] = position.get("slippage_usd", 0.0) + fill.slippage_usd
+        self._refresh_position_metrics(position, execution_book.mid_price or fill.avg_price)
         self.positions[position_key] = position
         trade = {
             "mode": "PAPER",
             "market_id": position_key,
+            "question": market.question,
             "decision": decision.decision.value,
             "size_usd": fill.filled_usd,
             "shares": fill.shares,
@@ -47,6 +63,7 @@ class PaperExecutor(Executor):
             "partial": fill.partial,
             "fees_usd": fill.fees_usd,
             "slippage_usd": fill.slippage_usd,
+            "created_at": time.time(),
         }
         self.trades.append(trade)
         return {"status": "FILLED" if not fill.partial else "PARTIAL", "trade": trade}
@@ -54,12 +71,32 @@ class PaperExecutor(Executor):
     def mark_to_market(self, market: Market, orderbook: OrderBook) -> None:
         yes_position = self.positions.get(market.id)
         if yes_position and orderbook.mid_price is not None:
-            yes_position["market_value"] = yes_position["shares"] * orderbook.mid_price
+            yes_position["question"] = yes_position.get("question") or market.question
+            self._refresh_position_metrics(yes_position, orderbook.mid_price)
 
         no_position = self.positions.get(f"{market.id}:NO")
         if no_position and orderbook.mid_price is not None:
             no_mid = max(0.01, min(0.99, 1 - orderbook.mid_price))
-            no_position["market_value"] = no_position["shares"] * no_mid
+            no_position["question"] = no_position.get("question") or market.question
+            self._refresh_position_metrics(no_position, no_mid)
+
+    def _refresh_position_metrics(self, position: dict, current_price: float) -> None:
+        position["current_price"] = round(current_price, 4)
+        position["avg_price"] = round(position["cost_basis"] / position["shares"], 4) if position["shares"] else 0.0
+        position["market_value"] = round(position["shares"] * current_price, 4)
+        pnl = position["market_value"] - position["cost_basis"] - position.get("fees_paid", 0.0)
+        position["unrealized_pnl"] = round(pnl, 4)
+        position["pnl_pct"] = round(pnl / position["cost_basis"], 4) if position["cost_basis"] else 0.0
+        position["win_loss"] = classify_pnl(pnl)
+        position["last_updated_at"] = time.time()
+
+
+def classify_pnl(pnl: float) -> str:
+    if pnl > 0.01:
+        return "WIN"
+    if pnl < -0.01:
+        return "LOSS"
+    return "BREAKEVEN"
 
 
 def invert_binary_orderbook(orderbook: OrderBook, no_token_id: str | None) -> OrderBook:

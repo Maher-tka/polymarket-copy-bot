@@ -14,6 +14,8 @@ def test_paper_executor_updates_cash_positions_and_trade_history():
     assert executor.cash < 1000
     assert "m1" in executor.positions
     assert len(executor.trades) == 1
+    assert executor.trades[0]["question"] == "Will executor work?"
+    assert executor.trades[0]["created_at"] > 0
 
 
 def test_paper_executor_rejects_stale_orderbook():
@@ -36,6 +38,18 @@ def test_paper_executor_can_buy_synthetic_no_side():
     assert executor.positions["m1:NO"]["side"] == Decision.BUY_NO.value
 
 
+def test_paper_executor_tracks_open_win_loss_metrics():
+    executor = PaperExecutor(Settings(_env_file=None))
+    asyncio.run(executor.execute(decision(), market(), orderbook(), 10))
+
+    executor.mark_to_market(market(), orderbook(bid=0.59, ask=0.61))
+
+    position = executor.positions["m1"]
+    assert position["win_loss"] == "WIN"
+    assert position["unrealized_pnl"] > 0
+    assert position["pnl_pct"] > 0
+
+
 def decision(side=Decision.BUY_YES):
     return AggregatedDecision("m1", side, 0.8, 0.08, [], {})
 
@@ -44,11 +58,11 @@ def market():
     return Market("m1", "Will executor work?", "executor", "yes", "no", 5000, 10000, time.time() + 3600)
 
 
-def orderbook(updated_at=None):
+def orderbook(updated_at=None, bid=0.49, ask=0.50):
     return OrderBook(
         "m1",
         "yes",
-        asks=[OrderBookLevel(0.50, 100)],
-        bids=[OrderBookLevel(0.49, 100)],
+        asks=[OrderBookLevel(ask, 100)],
+        bids=[OrderBookLevel(bid, 100)],
         updated_at=updated_at or time.time(),
     )

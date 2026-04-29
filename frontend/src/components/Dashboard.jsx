@@ -13,12 +13,15 @@ import SignalBreakdown from "./SignalBreakdown.jsx";
 import StatCard from "./StatCard.jsx";
 import TopStatusBar from "./TopStatusBar.jsx";
 import TradeHistory from "./TradeHistory.jsx";
+import WinLossHistory from "./WinLossHistory.jsx";
 
 export default function Dashboard({ state, onRefresh }) {
   const [activeView, setActiveView] = useState("overview");
   const positions = state.positions || [];
   const trades = state.trades || [];
   const decisions = state.last_decisions || [];
+  const winLossHistory = state.win_loss_history || [];
+  const performanceSummary = state.performance_summary || {};
   const exposure = positions.reduce((total, position) => total + Number(position.cost_basis || 0), 0);
   const dailyPnl = Number(state.daily_pnl || 0);
 
@@ -59,6 +62,9 @@ export default function Dashboard({ state, onRefresh }) {
             </section>
             <section className="contentGrid primary">
               <SignalBreakdown decisions={decisions} />
+              <WinLossHistory history={winLossHistory} summary={performanceSummary} />
+            </section>
+            <section className="contentGrid single">
               <MarketTable decisions={decisions} markets={state.markets || []} compact />
             </section>
           </>
@@ -83,7 +89,10 @@ export default function Dashboard({ state, onRefresh }) {
 
         {activeView === "activity" ? (
           <section className="contentGrid primary">
-            <TradeHistory trades={trades} />
+            <div className="stack">
+              <WinLossHistory history={winLossHistory} summary={performanceSummary} />
+              <TradeHistory trades={trades} />
+            </div>
             <LogsPanel logs={state.logs || []} />
           </section>
         ) : null}
