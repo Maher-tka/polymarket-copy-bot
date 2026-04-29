@@ -23,3 +23,4 @@ Implemented guide safeguards:
 - Signal attribution on paper trades for later performance review.
 - Research audit CSVs under `data/research_audit` for scored signals and paper fills.
 - Optional cached Metaculus probability provider through `EXTERNAL_PROBABILITY_PROVIDER=metaculus`.
+- Optional Fear Seller strategy in `backend/app/strategy/impossibility_seller.py`, disabled by default because high win-rate tail-risk trades can still lose badly.

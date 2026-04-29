@@ -9,6 +9,7 @@ from backend.app.data.clob_ws import ClobMarketWebSocket
 from backend.app.data.external_probability import MetaculusProbabilityProvider, MockProbabilityProvider
 from backend.app.data.gamma_api import GammaApi
 from backend.app.data.news_feed import NewsFeed
+from backend.app.data.price_feed import StaticPriceFeed
 from backend.app.execution.order_manager import OrderManager
 from backend.app.execution.paper_executor import PaperExecutor
 from backend.app.execution.real_executor import RealExecutor
@@ -19,6 +20,7 @@ from backend.app.storage.db import session_scope
 from backend.app.storage.models import TradeModel
 from backend.app.storage.repositories import MarketRepository, TradeRepository
 from backend.app.strategy.calibration_arbitrage import CalibrationArbitrageStrategy
+from backend.app.strategy.impossibility_seller import ImpossibilitySellerStrategy, cap_fear_seller_size
 from backend.app.strategy.microstructure import MicrostructureStrategy
 from backend.app.strategy.news_reaction import NewsReactionStrategy
 from backend.app.strategy.signal_aggregator import SignalAggregator
@@ -47,12 +49,14 @@ class BotEngine:
         self._last_market_refresh = 0.0
         self._high_water_nav = settings.paper_start_balance
         self.market_ws = ClobMarketWebSocket(settings.stale_data_seconds, settings.websocket_heartbeat_seconds)
+        self.impossibility_seller = ImpossibilitySellerStrategy(settings, StaticPriceFeed())
         self.strategies = [
             CalibrationArbitrageStrategy(settings, self.probability_provider),
             MicrostructureStrategy(settings),
             SpreadCaptureStrategy(settings),
             SmartMoneyStrategy(settings),
             NewsReactionStrategy(settings, NewsFeed()),
+            self.impossibility_seller,
         ]
 
     async def start(self) -> None:
@@ -126,6 +130,9 @@ class BotEngine:
     async def _run_paper_cycle(self) -> None:
         self.state.state.cycle_count += 1
         self.state.state.last_cycle_at = time.time()
+        cancelled = self.paper_executor.cancel_stale_orders(self.settings.imp_cancel_stale_seconds)
+        if cancelled:
+            self.state.log(f"Cancelled {cancelled} stale paper maker order{'' if cancelled == 1 else 's'}.")
         markets = await self._active_markets()
         if not markets:
             self.state.log("No eligible live markets found yet.")
@@ -237,6 +244,18 @@ class BotEngine:
             max(0.0, adjusted_edge),
             orderbook.mid_price or 1.0,
         )
+        if decision.metadata.get("strategy") == "impossibility_seller":
+            context = self._fear_seller_exposure_context(market, decision.metadata)
+            size_usd = cap_fear_seller_size(
+                size_usd,
+                self.paper_executor.nav,
+                self.paper_executor.cash,
+                context["market_exposure"],
+                context["total_exposure"],
+                context["bucket_exposure"],
+                float(decision.metadata.get("no_price") or 1.0),
+                self.settings,
+            )
         risk_state = PortfolioRiskState(
             nav=self.paper_executor.nav,
             cash=self.paper_executor.cash,
@@ -246,6 +265,8 @@ class BotEngine:
             exposure_by_correlation_group=self._position_exposure_by_group(),
         )
         risk = self.risk_engine.evaluate(decision, market, orderbook, risk_state, size_usd)
+        if decision.metadata.get("strategy") == "impossibility_seller":
+            self._apply_fear_seller_guards(risk, market, decision.metadata, size_usd)
         self.state.state.edge_costs_latest = risk.edge_costs
         self.audit_log.log_decision(market, decision, risk)
         result = {"decision": decision, "risk": risk, "size_usd": size_usd, "execution": None}
@@ -266,6 +287,7 @@ class BotEngine:
                 "risk_ok": risk.accepted,
                 "reasons": decision.reasons + risk.reasons,
                 "components": decision.components,
+                "metadata": decision.metadata,
                 "correlation_group": market.correlation_group,
             },
         )
@@ -296,10 +318,12 @@ class BotEngine:
         self.state.state.balance = round(self.paper_executor.cash, 4)
         self.state.state.nav = round(self.paper_executor.nav, 4)
         self.state.state.positions = self._position_snapshots()
+        self.state.state.open_orders = list(self.paper_executor.open_orders[:100])
         self.state.state.trades = list(reversed(self.paper_executor.trades[-100:]))
         self.state.state.win_loss_history = self._win_loss_history()
         self.state.state.performance_summary = self._performance_summary(self.state.state.win_loss_history)
         self.state.state.audit_summary = self.audit_log.summary()
+        self.state.state.fear_seller = self.impossibility_seller.summary(self.state.state.positions, nav=self.paper_executor.nav)
         self.state.state.blocked_reasons = list(self.circuit_breaker.blocked_reasons)
         self.state.state.websocket_connected = self.market_ws.connected
         self.state.state.websocket_last_message_age_seconds = self._websocket_message_age()
@@ -417,6 +441,60 @@ class BotEngine:
                     signal_source=trade.get("signal_source") or ",".join(sorted(decision.components.keys())) or "aggregator",
                 )
             )
+
+    def _apply_fear_seller_guards(self, risk, market: Market, metadata: dict, size_usd: float) -> None:
+        context = self._fear_seller_exposure_context(market, metadata)
+        reasons = []
+        if context["has_duplicate_market"]:
+            reasons.append("Fear Seller already has exposure or an open order in this market.")
+        if context["total_exposure"] >= self.paper_executor.nav * self.settings.imp_max_total_nav_pct:
+            reasons.append("Fear Seller total exposure cap hit.")
+        if context["bucket_exposure"] >= self.paper_executor.nav * self.settings.imp_max_bucket_nav_pct:
+            reasons.append("Fear Seller correlated bucket exposure cap hit.")
+        if size_usd <= 0:
+            reasons.append("Fear Seller capped position size to zero.")
+        if context["seconds_since_market_order"] < self.settings.imp_cooldown_seconds:
+            reasons.append("Fear Seller market cooldown is active.")
+        if reasons:
+            risk.reasons.extend(reasons)
+            risk.accepted = False
+
+    def _fear_seller_exposure_context(self, market: Market, metadata: dict) -> dict:
+        bucket = str(metadata.get("bucket") or "crypto_fear")
+        total_exposure = 0.0
+        market_exposure = 0.0
+        bucket_exposure = 0.0
+        has_duplicate_market = False
+        last_order_at = 0.0
+        market_keys = {market.id, f"{market.id}:NO"}
+        for key, position in self.paper_executor.positions.items():
+            if position.get("strategy") != "impossibility_seller":
+                continue
+            exposure = float(position.get("cost_basis", 0.0))
+            total_exposure += exposure
+            if key in market_keys:
+                market_exposure += exposure
+                has_duplicate_market = True
+            if position.get("bucket") == bucket:
+                bucket_exposure += exposure
+        for order in self.paper_executor.open_orders:
+            if order.get("strategy") != "impossibility_seller":
+                continue
+            exposure = float(order.get("size_usd", 0.0))
+            total_exposure += exposure
+            if order.get("market_id") in market_keys:
+                market_exposure += exposure
+                has_duplicate_market = True
+                last_order_at = max(last_order_at, float(order.get("created_at", 0.0)))
+            if order.get("bucket") == bucket:
+                bucket_exposure += exposure
+        return {
+            "total_exposure": total_exposure,
+            "market_exposure": market_exposure,
+            "bucket_exposure": bucket_exposure,
+            "has_duplicate_market": has_duplicate_market,
+            "seconds_since_market_order": time.time() - last_order_at if last_order_at else 999_999.0,
+        }
 
     def _probability_provider(self, settings: Settings):
         if settings.external_probability_provider == "metaculus":

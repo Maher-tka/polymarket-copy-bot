@@ -77,6 +77,7 @@ class Signal:
     expected_edge: float
     confidence: float
     reasons: list[str] = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -87,3 +88,4 @@ class AggregatedDecision:
     expected_edge: float
     reasons: list[str]
     components: dict[str, float]
+    metadata: dict = field(default_factory=dict)

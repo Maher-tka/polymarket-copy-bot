@@ -44,6 +44,8 @@ class RealExecutor(Executor):
         token_id = self._token_for_decision(decision.decision, market)
         side = "SELL" if decision.decision == Decision.SELL else "BUY"
         price = self._maker_price(decision.decision, orderbook)
+        if decision.metadata.get("execution_style") == "maker_limit":
+            price = float(decision.metadata.get("maker_price") or price)
         if price <= 0:
             raise RuntimeError("Cannot place real order without a valid limit price.")
 
@@ -106,8 +108,12 @@ class RealExecutor(Executor):
     @staticmethod
     def _maker_price(decision: Decision, orderbook: OrderBook) -> float:
         mid = orderbook.mid_price or 0.0
-        if decision in {Decision.BUY_YES, Decision.BUY_NO}:
+        if decision == Decision.BUY_YES:
             return orderbook.best_bid or max(mid - 0.01, 0.01)
+        if decision == Decision.BUY_NO:
+            if orderbook.best_ask is not None:
+                return round(max(0.01, min(0.99, 1 - orderbook.best_ask)), 4)
+            return max((1 - mid) - 0.01, 0.01)
         if decision == Decision.SELL:
             return orderbook.best_ask or min(mid + 0.01, 0.99)
         return 0.0

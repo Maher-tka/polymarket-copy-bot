@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Activity, BarChart3, Gauge, History, Shield } from "lucide-react";
 
 import BotControls from "./BotControls.jsx";
+import FearSellerPanel from "./FearSellerPanel.jsx";
 import LogsPanel from "./LogsPanel.jsx";
 import MarketTable from "./MarketTable.jsx";
 import OrderbookPanel from "./OrderbookPanel.jsx";
@@ -65,6 +66,9 @@ export default function Dashboard({ state, onRefresh }) {
               <RiskPanel state={state} />
               <OrderbookPanel state={state} />
             </section>
+            <section className="contentGrid single">
+              <FearSellerPanel summary={state.fear_seller || {}} />
+            </section>
             <section className="contentGrid primary">
               <SignalBreakdown decisions={decisions} />
               <WinLossHistory history={winLossHistory} summary={performanceSummary} />
@@ -89,6 +93,12 @@ export default function Dashboard({ state, onRefresh }) {
           <section className="contentGrid primary">
             <RiskPanel state={state} />
             <PositionsPanel positions={positions} />
+          </section>
+        ) : null}
+
+        {activeView === "fear" ? (
+          <section className="contentGrid single">
+            <FearSellerPanel summary={state.fear_seller || {}} />
           </section>
         ) : null}
 
@@ -123,6 +133,7 @@ function titleFor(view) {
     scanner: "Market Scanner",
     risk: "Risk & Exposure",
     activity: "Trades & Logs",
+    fear: "Fear Seller",
     settings: "Settings",
   };
   return titles[view] || "Command Center";

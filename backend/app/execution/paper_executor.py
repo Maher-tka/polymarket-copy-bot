@@ -12,11 +12,20 @@ class PaperExecutor(Executor):
         self.cash = settings.paper_start_balance
         self.positions: dict[str, dict] = {}
         self.trades: list[dict] = []
+        self.open_orders: list[dict] = []
         self.fill_simulator = FillSimulator(settings)
 
     @property
     def nav(self) -> float:
         return self.cash + sum(position["market_value"] for position in self.positions.values())
+
+    def cancel_stale_orders(self, max_age_seconds: int) -> int:
+        now = time.time()
+        before = len(self.open_orders)
+        self.open_orders = [
+            order for order in self.open_orders if now - float(order.get("created_at", 0.0)) <= max_age_seconds
+        ]
+        return before - len(self.open_orders)
 
     async def execute(self, decision: AggregatedDecision, market: Market, orderbook: OrderBook, size_usd: float) -> dict:
         if decision.decision not in {Decision.BUY_YES, Decision.BUY_NO}:
@@ -27,6 +36,26 @@ class PaperExecutor(Executor):
         limit_price = execution_book.best_ask
         if limit_price is None:
             return {"status": "SKIPPED", "reason": "No ask price."}
+        if decision.metadata.get("execution_style") == "maker_limit":
+            maker_price = float(decision.metadata.get("maker_price") or 0.0)
+            if maker_price <= 0 or maker_price >= limit_price:
+                return {"status": "SKIPPED", "reason": "Maker limit would cross the spread."}
+            order = {
+                "mode": "PAPER",
+                "order_type": "LIMIT",
+                "post_only": True,
+                "market_id": market.id if decision.decision == Decision.BUY_YES else f"{market.id}:NO",
+                "question": market.question,
+                "decision": decision.decision.value,
+                "price": round(maker_price, 4),
+                "size_usd": round(min(size_usd, self.cash), 4),
+                "strategy": decision.metadata.get("strategy"),
+                "bucket": decision.metadata.get("bucket"),
+                "created_at": time.time(),
+            }
+            self.open_orders.insert(0, order)
+            self.open_orders = self.open_orders[:100]
+            return {"status": "SUBMITTED", "order": order}
         fill = self.fill_simulator.simulate_buy(execution_book, min(size_usd, self.cash), limit_price)
         if fill.filled_usd <= 0:
             return {"status": "SKIPPED", "reason": "No simulated fill."}
@@ -43,6 +72,8 @@ class PaperExecutor(Executor):
                 "opened_at": time.time(),
                 "fees_paid": 0.0,
                 "slippage_usd": 0.0,
+                "strategy": decision.metadata.get("strategy"),
+                "bucket": decision.metadata.get("bucket"),
             },
         )
         position["question"] = position.get("question") or market.question
@@ -50,6 +81,8 @@ class PaperExecutor(Executor):
         position["cost_basis"] += fill.filled_usd
         position["fees_paid"] = position.get("fees_paid", 0.0) + fill.fees_usd
         position["slippage_usd"] = position.get("slippage_usd", 0.0) + fill.slippage_usd
+        position["strategy"] = position.get("strategy") or decision.metadata.get("strategy")
+        position["bucket"] = position.get("bucket") or decision.metadata.get("bucket")
         self._refresh_position_metrics(position, execution_book.mid_price or fill.avg_price)
         self.positions[position_key] = position
         trade = {
@@ -63,6 +96,8 @@ class PaperExecutor(Executor):
             "partial": fill.partial,
             "fees_usd": fill.fees_usd,
             "slippage_usd": fill.slippage_usd,
+            "strategy": decision.metadata.get("strategy"),
+            "bucket": decision.metadata.get("bucket"),
             "created_at": time.time(),
         }
         self.trades.append(trade)

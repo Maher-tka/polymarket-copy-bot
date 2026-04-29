@@ -749,6 +749,78 @@ td span {
   color: #aaa4b5;
 }
 
+.tailRiskWarning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  border: 1px solid #7a4b1c;
+  border-radius: 8px;
+  background: #221509;
+  color: #fed7aa;
+  padding: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.fearStats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-bottom: 0.85rem;
+}
+
+.fearStats div,
+.fearCandidate,
+.fearCandidateMetrics div {
+  border: 1px solid #2b2739;
+  border-radius: 8px;
+  background: #15131d;
+  padding: 0.7rem;
+}
+
+.fearStats span,
+.fearCandidateMetrics span {
+  display: block;
+  color: #8f8a9d;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.fearStats strong,
+.fearCandidateMetrics strong {
+  display: block;
+  margin-top: 0.2rem;
+}
+
+.bucketStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.85rem;
+}
+
+.fearCandidateList {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.fearCandidate {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.fearCandidate > div:first-child span {
+  display: block;
+  margin-top: 0.25rem;
+  color: #aaa4b5;
+}
+
+.fearCandidateMetrics {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(92px, 1fr));
+  gap: 0.5rem;
+}
+
 .healthDot {
   width: 10px;
   height: 10px;
@@ -808,7 +880,8 @@ td span {
   .contentGrid.scanner,
   .contentGrid.single,
   .heroGrid,
-  .statGrid {
+  .statGrid,
+  .fearCandidateMetrics {
     grid-template-columns: 1fr 1fr;
   }
 }
@@ -876,7 +949,9 @@ td span {
   .statGrid,
   .signalHero,
   .historySummary,
-  .heroMeta {
+  .heroMeta,
+  .fearStats,
+  .fearCandidateMetrics {
     grid-template-columns: 1fr;
   }
 

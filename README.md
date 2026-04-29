@@ -24,6 +24,7 @@ The bot is no longer only a copy-trading bot. The main research stack is:
 3. Market-making / spread capture
 4. Optional smart-money tracking as a weak signal only
 5. Optional news/event signal, disabled by default until tested
+6. Optional Fear Seller strategy, disabled by default because of tail risk
 
 Signal aggregation uses:
 
@@ -36,6 +37,25 @@ final_score =
 ```
 
 News signal code exists as an interface, but it is disabled by default and must not be used live until backtested.
+
+## Fear Seller Strategy
+
+Fear Seller is an optional module named `impossibility_seller.py`. It looks for extreme fear markets where the disaster side appears overpriced, then buys the high-probability opposite side. Example: if a BTC crash market asks whether Bitcoin will fall below a far-away target soon, Fear Seller may evaluate buying NO at a high probability price.
+
+This strategy can show a very high win rate, but it has hidden tail risk. One rare loss can erase many small wins, so it is disabled by default with `ENABLE_IMPOSSIBILITY_SELLER=false`.
+
+Safety defaults:
+
+- Uses maker limit orders only.
+- Does not use market orders.
+- Does not chase price.
+- Uses small sizing: 0.5% NAV per trade by default.
+- Caps total Fear Seller exposure at 5% NAV.
+- Caps correlated BTC/ETH crash buckets at 2% NAV by default.
+- Requires fresh orderbook data and main `RiskEngine` approval.
+- Rejects REAL mode if there is no live price feed.
+
+Test it in PAPER mode first. Do not use copy-trading links, wallet feeds, Telegram bots, or any single trader as a blind trading signal.
 
 ## Modes
 
@@ -227,6 +247,7 @@ MAX_CORRELATED_NAV_PCT=0.04
 WEBSOCKET_HEARTBEAT_SECONDS=10
 AUDIT_LOG_DIR=data/research_audit
 EXTERNAL_PROBABILITY_PROVIDER=mock
+ENABLE_IMPOSSIBILITY_SELLER=false
 ```
 
 ## Testing

@@ -61,6 +61,29 @@ class Settings(BaseSettings):
     enable_spread_capture: bool = True
     enable_smart_money: bool = False
     enable_news: bool = False
+    enable_impossibility_seller: bool = False
+
+    imp_min_high_prob_price: float = 0.90
+    imp_max_high_prob_price: float = 0.995
+    imp_max_trade_nav_pct: float = 0.005
+    imp_max_total_nav_pct: float = 0.05
+    imp_max_market_nav_pct: float = 0.01
+    imp_max_bucket_nav_pct: float = 0.02
+    imp_min_edge: float = 0.005
+    imp_min_score: float = 75.0
+    imp_max_days_to_expiry: float = 45.0
+    imp_min_days_to_expiry: float = 1.0
+    imp_max_spread_cents: float = 2.0
+    imp_min_liquidity: float = 5000.0
+    imp_min_volume: float = 10000.0
+    imp_require_crypto_only: bool = True
+    imp_allowed_keywords: str = "BTC,Bitcoin,ETH,Ethereum,SOL,crypto"
+    imp_disaster_keywords: str = "below,under,fall,crash,drop,hit,reach"
+    imp_cooldown_seconds: int = 300
+    imp_cancel_stale_seconds: int = 60
+    imp_take_profit_price: float = 0.995
+    imp_stop_review_price: float = 0.90
+    imp_hard_stop_price: float = 0.80
 
     sqlite_url: str = "sqlite:///./backend/app/storage/polymarket_bot.db"
     backend_cors_origin: str = "http://127.0.0.1:5173"
@@ -81,6 +104,10 @@ class Settings(BaseSettings):
     @property
     def max_spread(self) -> float:
         return self.max_spread_cents / 100
+
+    @property
+    def imp_max_spread(self) -> float:
+        return self.imp_max_spread_cents / 100
 
 
 @lru_cache(maxsize=1)

@@ -39,6 +39,11 @@ class RiskEngine:
     ) -> RiskDecision:
         reasons: list[str] = []
         adjusted_edge, edge_costs = self.cost_adjusted_edge(decision, market)
+        is_fear_seller = decision.metadata.get("strategy") == "impossibility_seller"
+        min_edge = self.settings.imp_min_edge if is_fear_seller else self.settings.min_expected_edge
+        max_spread = self.settings.imp_max_spread if is_fear_seller else self.settings.max_spread
+        min_liquidity = self.settings.imp_min_liquidity if is_fear_seller else self.settings.min_liquidity
+        min_volume = self.settings.imp_min_volume if is_fear_seller else self.settings.min_volume
         if self.circuit_breaker.emergency_stop:
             reasons.append("Emergency stop is active.")
         if self.circuit_breaker.paused:
@@ -50,15 +55,15 @@ class RiskEngine:
             score_threshold = max(score_threshold, 0.65)
         if decision.final_score < score_threshold:
             reasons.append("Final score is below configured threshold.")
-        if decision.expected_edge < self.settings.min_expected_edge:
+        if decision.expected_edge < min_edge:
             reasons.append("Expected edge is below minimum.")
-        if adjusted_edge < self.settings.min_expected_edge:
+        if adjusted_edge < min_edge:
             reasons.append("Cost-adjusted edge is below minimum after fees, slippage, and capital lock-up.")
-        if market.liquidity < self.settings.min_liquidity:
+        if market.liquidity < min_liquidity:
             reasons.append("Market liquidity is below MIN_LIQUIDITY.")
-        if market.volume < self.settings.min_volume:
+        if market.volume < min_volume:
             reasons.append("Market volume is below MIN_VOLUME.")
-        if orderbook.spread > self.settings.max_spread:
+        if orderbook.spread > max_spread:
             reasons.append("Bid/ask spread is above MAX_SPREAD_CENTS.")
         if market.end_ts and market.end_ts - time.time() < self.settings.market_close_buffer_minutes * 60:
             reasons.append("Market is too close to resolution.")
