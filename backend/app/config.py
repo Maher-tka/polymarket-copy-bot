@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     market_discovery_limit: int = 60
     market_scan_limit: int = 12
     max_paper_trades_per_cycle: int = 2
+    audit_log_dir: str = "data/research_audit"
+    external_probability_provider: Literal["mock", "metaculus"] = "mock"
+    metaculus_cache_ttl_seconds: int = 900
+    metaculus_search_limit: int = 5
 
     enable_calibration: bool = True
     enable_microstructure: bool = True

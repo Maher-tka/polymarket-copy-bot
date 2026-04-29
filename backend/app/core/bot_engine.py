@@ -3,9 +3,10 @@ import contextlib
 import time
 
 from backend.app.config import Settings
+from backend.app.analytics.research_audit import ResearchAuditLog
 from backend.app.data.clob_rest import ClobRestClient
 from backend.app.data.clob_ws import ClobMarketWebSocket
-from backend.app.data.external_probability import MockProbabilityProvider
+from backend.app.data.external_probability import MetaculusProbabilityProvider, MockProbabilityProvider
 from backend.app.data.gamma_api import GammaApi
 from backend.app.data.news_feed import NewsFeed
 from backend.app.execution.order_manager import OrderManager
@@ -38,6 +39,8 @@ class BotEngine:
         self.real_executor = RealExecutor(settings)
         self.order_manager = OrderManager(settings.max_order_age_seconds, settings.order_cooldown_seconds)
         self.aggregator = SignalAggregator(settings)
+        self.audit_log = ResearchAuditLog(settings.audit_log_dir)
+        self.probability_provider = self._probability_provider(settings)
         self._loop_task: asyncio.Task | None = None
         self._markets_cache: list[Market] = []
         self._market_group_by_id: dict[str, str] = {}
@@ -45,7 +48,7 @@ class BotEngine:
         self._high_water_nav = settings.paper_start_balance
         self.market_ws = ClobMarketWebSocket(settings.stale_data_seconds, settings.websocket_heartbeat_seconds)
         self.strategies = [
-            CalibrationArbitrageStrategy(settings, MockProbabilityProvider()),
+            CalibrationArbitrageStrategy(settings, self.probability_provider),
             MicrostructureStrategy(settings),
             SpreadCaptureStrategy(settings),
             SmartMoneyStrategy(settings),
@@ -71,6 +74,12 @@ class BotEngine:
         self.state.state.status = "STOPPED"
         await self._stop_loop()
         self.state.log("Bot stopped.")
+
+    async def shutdown(self) -> None:
+        await self.stop()
+        close = getattr(self.probability_provider, "close", None)
+        if close:
+            await close()
 
     async def emergency_stop(self) -> None:
         self.circuit_breaker.emergency_stop = True
@@ -238,6 +247,7 @@ class BotEngine:
         )
         risk = self.risk_engine.evaluate(decision, market, orderbook, risk_state, size_usd)
         self.state.state.edge_costs_latest = risk.edge_costs
+        self.audit_log.log_decision(market, decision, risk)
         result = {"decision": decision, "risk": risk, "size_usd": size_usd, "execution": None}
         self.state.state.last_decisions = [
             item for item in self.state.state.last_decisions if item.get("market_id") != market.id
@@ -289,6 +299,7 @@ class BotEngine:
         self.state.state.trades = list(reversed(self.paper_executor.trades[-100:]))
         self.state.state.win_loss_history = self._win_loss_history()
         self.state.state.performance_summary = self._performance_summary(self.state.state.win_loss_history)
+        self.state.state.audit_summary = self.audit_log.summary()
         self.state.state.blocked_reasons = list(self.circuit_breaker.blocked_reasons)
         self.state.state.websocket_connected = self.market_ws.connected
         self.state.state.websocket_last_message_age_seconds = self._websocket_message_age()
@@ -393,6 +404,7 @@ class BotEngine:
         if not execution or execution.get("status") not in {"FILLED", "PARTIAL"}:
             return
         trade = execution.get("trade") or {}
+        self.audit_log.log_trade(trade)
         with session_scope() as session:
             TradeRepository(session).record_trade(
                 TradeModel(
@@ -405,6 +417,12 @@ class BotEngine:
                     signal_source=trade.get("signal_source") or ",".join(sorted(decision.components.keys())) or "aggregator",
                 )
             )
+
+    def _probability_provider(self, settings: Settings):
+        if settings.external_probability_provider == "metaculus":
+            self.state.log("Using cached Metaculus external probability provider.")
+            return MetaculusProbabilityProvider(settings)
+        return MockProbabilityProvider()
 
 
 def primary_signal(components: dict[str, float]) -> str:

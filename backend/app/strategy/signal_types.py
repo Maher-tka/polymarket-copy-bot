@@ -29,6 +29,9 @@ class OrderBook:
     last_trade_price: float | None = None
     updated_at: float = 0.0
     source: str = "unknown"
+    trade_flow_imbalance: float = 0.0
+    recent_trade_count: int = 0
+    last_event_type: str | None = None
 
     @property
     def best_bid(self) -> float | None:

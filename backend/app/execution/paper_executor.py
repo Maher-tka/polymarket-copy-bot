@@ -109,4 +109,7 @@ def invert_binary_orderbook(orderbook: OrderBook, no_token_id: str | None) -> Or
         last_trade_price=round(1 - orderbook.last_trade_price, 4) if orderbook.last_trade_price is not None else None,
         updated_at=orderbook.updated_at,
         source=f"{orderbook.source}:synthetic-no",
+        trade_flow_imbalance=round(-orderbook.trade_flow_imbalance, 4),
+        recent_trade_count=orderbook.recent_trade_count,
+        last_event_type=orderbook.last_event_type,
     )

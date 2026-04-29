@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 
 import websockets
@@ -23,6 +24,7 @@ class ClobMarketWebSocket:
         self.last_stale_reason = "not_connected"
         self._task: asyncio.Task | None = None
         self._subscription_version = 0
+        self._trade_flow: dict[str, deque[tuple[str, float]]] = {}
 
     def subscribe(self, token_ids: list[str]) -> None:
         before = len(self.token_ids)
@@ -83,7 +85,13 @@ class ClobMarketWebSocket:
                             if message == "PONG":
                                 continue
                             self.last_message_at = time.time()
+                            for update in parse_trade_updates(message):
+                                self._record_trade_flow(update["asset_id"], update["side"], update["size"])
+                                if update["asset_id"] in self.orderbooks and update.get("price") is not None:
+                                    self.orderbooks[update["asset_id"]].last_trade_price = update["price"]
+                                    self.orderbooks[update["asset_id"]].last_event_type = update["event_type"]
                             for book in parse_market_message(message):
+                                self._attach_trade_flow(book)
                                 self.orderbooks[book.yes_token_id] = book
                                 if on_update:
                                     await on_update(book)
@@ -106,6 +114,25 @@ class ClobMarketWebSocket:
             await asyncio.sleep(self.heartbeat_seconds)
             await ws.send(json.dumps({"type": "ping"}))
 
+    def _record_trade_flow(self, token_id: str, side: str, size: float) -> None:
+        if not token_id or size <= 0:
+            return
+        if token_id not in self._trade_flow:
+            self._trade_flow[token_id] = deque(maxlen=40)
+        self._trade_flow[token_id].append((side.upper(), size))
+
+    def _attach_trade_flow(self, book: OrderBook) -> None:
+        history = self._trade_flow.get(book.yes_token_id)
+        if not history:
+            return
+        buy_volume = sum(size for side, size in history if side in {"BUY", "BID"})
+        sell_volume = sum(size for side, size in history if side in {"SELL", "ASK"})
+        total = buy_volume + sell_volume
+        if total <= 0:
+            return
+        book.trade_flow_imbalance = round((buy_volume - sell_volume) / total, 4)
+        book.recent_trade_count = len(history)
+
 
 def parse_market_message(message: str) -> list[OrderBook]:
     try:
@@ -118,6 +145,7 @@ def parse_market_message(message: str) -> list[OrderBook]:
         if not isinstance(item, dict):
             continue
         asset_id = str(item.get("asset_id") or item.get("assetId") or "")
+        event_type = str(item.get("event_type") or item.get("type") or "")
         best_bid = first_present(item, "best_bid", "bestBid", "bid")
         best_ask = first_present(item, "best_ask", "bestAsk", "ask")
         bids = item.get("bids")
@@ -138,9 +166,32 @@ def parse_market_message(message: str) -> list[OrderBook]:
                 last_trade_price=safe_float(last_trade),
                 updated_at=time.time(),
                 source="websocket",
+                last_event_type=event_type or None,
             )
         )
     return books
+
+
+def parse_trade_updates(message: str) -> list[dict]:
+    try:
+        raw = json.loads(message)
+    except json.JSONDecodeError:
+        return []
+    records = raw if isinstance(raw, list) else [raw]
+    updates: list[dict] = []
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        event_type = str(item.get("event_type") or item.get("type") or "")
+        if event_type not in {"last_trade_price", "trade"}:
+            continue
+        asset_id = str(item.get("asset_id") or item.get("assetId") or item.get("market") or "")
+        side = str(item.get("side") or item.get("taker_side") or item.get("aggressor_side") or "").upper()
+        size = safe_float(first_present(item, "size", "amount", "matched_amount", "shares")) or 0.0
+        price = safe_float(first_present(item, "price", "last_trade_price", "lastTradePrice"))
+        if asset_id and side and size > 0:
+            updates.append({"asset_id": asset_id, "side": side, "size": size, "price": price, "event_type": event_type})
+    return updates
 
 
 def first_present(item: dict, *keys: str):

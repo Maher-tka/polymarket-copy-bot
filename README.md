@@ -96,6 +96,9 @@ The local PDF guide recommendations are reflected in these modules:
 - Half-Kelly position sizing capped by trade, market, and cash-reserve limits: `backend/app/risk/position_sizing.py`
 - Correlated market grouping and exposure caps: `backend/app/risk/correlation.py`, `backend/app/risk/risk_engine.py`
 - Signal attribution on every paper trade: `backend/app/core/bot_engine.py`
+- Research audit CSVs for every scored signal and paper fill: `backend/app/analytics/research_audit.py`
+- Optional cached Metaculus external probability provider, disabled by default: `backend/app/data/external_probability.py`
+- Recent trade-flow imbalance for microstructure when WebSocket trade events provide size/side: `backend/app/data/clob_ws.py`, `backend/app/strategy/microstructure.py`
 
 The bot remains PAPER by default. The guide’s real-money signing examples were not enabled automatically.
 
@@ -222,6 +225,8 @@ ANNUAL_CAPITAL_COST_PCT=0.08
 MAX_OPEN_MARKETS=20
 MAX_CORRELATED_NAV_PCT=0.04
 WEBSOCKET_HEARTBEAT_SECONDS=10
+AUDIT_LOG_DIR=data/research_audit
+EXTERNAL_PROBABILITY_PROVIDER=mock
 ```
 
 ## Testing

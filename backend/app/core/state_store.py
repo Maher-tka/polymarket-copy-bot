@@ -33,6 +33,7 @@ class RuntimeState:
     last_error: str | None = None
     data_source: str = "idle"
     edge_costs_latest: dict = field(default_factory=dict)
+    audit_summary: dict = field(default_factory=dict)
 
 
 class StateStore:

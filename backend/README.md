@@ -21,3 +21,5 @@ Implemented guide safeguards:
 - Cost-adjusted edge checks for resolution fee, fees, slippage, and capital lock-up time.
 - Per-market, max-open-market, and correlated exposure limits.
 - Signal attribution on paper trades for later performance review.
+- Research audit CSVs under `data/research_audit` for scored signals and paper fills.
+- Optional cached Metaculus probability provider through `EXTERNAL_PROBABILITY_PROVIDER=metaculus`.

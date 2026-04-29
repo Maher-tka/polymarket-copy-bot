@@ -21,10 +21,22 @@ class MicrostructureStrategy(Strategy):
         imbalance = bid_depth / total
         if orderbook.spread > self.settings.max_spread:
             return None
+        trade_flow = getattr(orderbook, "trade_flow_imbalance", 0.0)
+        recent_trades = getattr(orderbook, "recent_trade_count", 0)
         if imbalance > 0.70:
             score = min(1.0, (imbalance - 0.5) * 2)
-            return Signal(self.name, market.id, "YES", score, score * 0.08, score, [f"Bid depth imbalance {imbalance:.2f}."])
+            flow_bonus = max(0.0, trade_flow) * 0.03
+            confidence = min(1.0, score + max(0.0, trade_flow) * 0.2)
+            reasons = [f"Bid depth imbalance {imbalance:.2f}."]
+            if recent_trades:
+                reasons.append(f"Recent trade-flow imbalance {trade_flow:+.2f} across {recent_trades} trades.")
+            return Signal(self.name, market.id, "YES", score, score * 0.08 + flow_bonus, confidence, reasons)
         if imbalance < 0.30:
             score = min(1.0, (0.5 - imbalance) * 2)
-            return Signal(self.name, market.id, "NO", score, score * 0.08, score, [f"Ask depth imbalance {imbalance:.2f}."])
+            flow_bonus = max(0.0, -trade_flow) * 0.03
+            confidence = min(1.0, score + max(0.0, -trade_flow) * 0.2)
+            reasons = [f"Ask depth imbalance {imbalance:.2f}."]
+            if recent_trades:
+                reasons.append(f"Recent trade-flow imbalance {trade_flow:+.2f} across {recent_trades} trades.")
+            return Signal(self.name, market.id, "NO", score, score * 0.08 + flow_bonus, confidence, reasons)
         return None

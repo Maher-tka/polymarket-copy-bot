@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
     logger.info("Backend starting in %s mode", settings.bot_mode)
     app.state.engine = engine
     yield
-    await engine.stop()
+    await engine.shutdown()
 
 
 app = FastAPI(title="Polymarket Trading Bot", version="0.1.0", lifespan=lifespan)

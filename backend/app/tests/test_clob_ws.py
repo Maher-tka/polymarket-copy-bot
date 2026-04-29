@@ -1,6 +1,6 @@
 import json
 
-from backend.app.data.clob_ws import parse_market_message
+from backend.app.data.clob_ws import parse_market_message, parse_trade_updates
 
 
 def test_parse_book_message() -> None:
@@ -18,3 +18,11 @@ def test_parse_best_bid_ask_message() -> None:
 
     assert books[0].best_bid == 0.48
     assert books[0].best_ask == 0.52
+
+
+def test_parse_last_trade_price_update() -> None:
+    updates = parse_trade_updates(
+        json.dumps({"event_type": "last_trade_price", "asset_id": "yes", "side": "BUY", "size": "42", "price": "0.57"})
+    )
+
+    assert updates == [{"asset_id": "yes", "side": "BUY", "size": 42.0, "price": 0.57, "event_type": "last_trade_price"}]
