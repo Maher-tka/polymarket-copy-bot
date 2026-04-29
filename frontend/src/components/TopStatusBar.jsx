@@ -29,6 +29,7 @@ export default function TopStatusBar({ state, onRefresh }) {
         </div>
         <StatusPill label="Bot" value={state.status} tone={state.status === "RUNNING" ? "good" : "idle"} />
         <StatusPill label="Market data" value={state.stale_data ? "Stale" : "Ready"} tone={state.stale_data ? "bad" : "good"} />
+        <StatusPill label="Loop" value={state.loop_running ? "Active" : "Idle"} tone={state.loop_running ? "good" : "idle"} />
         <StatusPill label="WebSocket" value={state.websocket_connected ? "Live" : "Waiting"} tone={state.websocket_connected ? "good" : "idle"} icon={<Radio size={15} />} />
       </div>
 

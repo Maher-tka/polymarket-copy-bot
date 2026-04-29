@@ -36,11 +36,16 @@ class Settings(BaseSettings):
     max_order_age_seconds: int = 30
     stale_data_seconds: int = 10
     kelly_fraction: float = 0.50
-    final_score_threshold: float = 0.65
+    final_score_threshold: float = 0.45
     market_close_buffer_minutes: int = 30
     order_cooldown_seconds: int = 10
     estimated_fee_bps: float = 0.0
     slippage_bps: float = 20.0
+    paper_loop_interval_seconds: int = 15
+    market_refresh_seconds: int = 300
+    market_discovery_limit: int = 60
+    market_scan_limit: int = 12
+    max_paper_trades_per_cycle: int = 2
 
     enable_calibration: bool = True
     enable_microstructure: bool = True

@@ -41,7 +41,10 @@ class RiskEngine:
             reasons.append("Bot is paused.")
         if decision.decision == Decision.HOLD:
             reasons.append("Signal aggregator decision is HOLD.")
-        if decision.final_score < self.settings.final_score_threshold:
+        score_threshold = self.settings.final_score_threshold
+        if self.settings.bot_mode == "REAL":
+            score_threshold = max(score_threshold, 0.65)
+        if decision.final_score < score_threshold:
             reasons.append("Final score is below configured threshold.")
         if decision.expected_edge < self.settings.min_expected_edge:
             reasons.append("Expected edge is below minimum.")

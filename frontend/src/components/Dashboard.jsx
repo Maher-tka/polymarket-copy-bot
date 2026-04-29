@@ -48,6 +48,7 @@ export default function Dashboard({ state, onRefresh }) {
           <StatCard label="Cash Balance" value={money(state.balance)} helper="Available buying power" />
           <StatCard label="Daily PnL" value={money(dailyPnl)} helper="Today only" tone={dailyPnl >= 0 ? "positive" : "negative"} />
           <StatCard label="Open Exposure" value={money(exposure)} helper={`${positions.length} active position${positions.length === 1 ? "" : "s"}`} />
+          <StatCard label="Live Cycles" value={Number(state.cycle_count || 0)} helper={`${Number(state.scanned_markets || 0)} markets scanned last cycle`} />
         </section>
 
         {activeView === "overview" ? (

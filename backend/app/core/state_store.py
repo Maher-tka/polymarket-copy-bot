@@ -21,6 +21,12 @@ class RuntimeState:
     last_decisions: list[dict] = field(default_factory=list)
     websocket_connected: bool = False
     stale_data: bool = False
+    loop_running: bool = False
+    cycle_count: int = 0
+    scanned_markets: int = 0
+    last_cycle_at: float | None = None
+    last_error: str | None = None
+    data_source: str = "idle"
 
 
 class StateStore:

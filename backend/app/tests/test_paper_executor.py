@@ -27,8 +27,17 @@ def test_paper_executor_rejects_stale_orderbook():
     assert len(executor.trades) == 0
 
 
-def decision():
-    return AggregatedDecision("m1", Decision.BUY_YES, 0.8, 0.08, [], {})
+def test_paper_executor_can_buy_synthetic_no_side():
+    executor = PaperExecutor(Settings(_env_file=None))
+    result = asyncio.run(executor.execute(decision(Decision.BUY_NO), market(), orderbook(), 10))
+
+    assert result["status"] == "FILLED"
+    assert "m1:NO" in executor.positions
+    assert executor.positions["m1:NO"]["side"] == Decision.BUY_NO.value
+
+
+def decision(side=Decision.BUY_YES):
+    return AggregatedDecision("m1", side, 0.8, 0.08, [], {})
 
 
 def market():

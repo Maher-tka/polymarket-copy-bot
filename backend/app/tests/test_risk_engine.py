@@ -57,6 +57,22 @@ def test_risk_engine_blocks_core_risk_limits():
     assert "Bid/ask spread is above MAX_SPREAD_CENTS." in result.reasons
 
 
+def test_real_mode_keeps_stricter_score_threshold():
+    settings = Settings(
+        _env_file=None,
+        bot_mode="REAL",
+        real_trading_enabled=True,
+        i_understand_real_money_risk=True,
+        polymarket_private_key="test-private-key",
+        polymarket_funder_address="0x0000000000000000000000000000000000000000",
+    )
+
+    result = RiskEngine(settings).evaluate(decision(score=0.5), market(), orderbook(), portfolio(), 10)
+
+    assert result.accepted is False
+    assert "Final score is below configured threshold." in result.reasons
+
+
 def test_risk_engine_blocks_daily_loss_drawdown_and_cash_reserve():
     settings = Settings(_env_file=None)
     risk = RiskEngine(settings)

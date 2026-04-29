@@ -1,6 +1,7 @@
 export default function MarketTable({ decisions, markets = [], compact = false }) {
   const rows = decisions.length ? decisions : markets.map((market) => ({
     market_id: market.id,
+    question: market.question,
     score: 0,
     edge: 0,
     decision: "WATCH",
@@ -20,7 +21,7 @@ export default function MarketTable({ decisions, markets = [], compact = false }
           {rows.length === 0 ? <tr><td colSpan="5"><span className="emptyState compact">No market signals yet.</span></td></tr> : rows.map((item, index) => (
             <tr key={`${item.market_id}-${index}`}>
               <td>
-                <strong>{item.market_id}</strong>
+                <strong>{item.question || item.market_id}</strong>
                 {!compact && item.reasons?.[0] ? <span>{item.reasons[0]}</span> : null}
               </td>
               <td><ScoreBadge value={item.score} /></td>
