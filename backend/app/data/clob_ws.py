@@ -18,6 +18,7 @@ class ClobMarketWebSocket:
         self.token_ids: set[str] = set()
         self.connected = False
         self.last_message_at = 0.0
+        self.last_stale_reason = "not_connected"
         self._task: asyncio.Task | None = None
 
     def subscribe(self, token_ids: list[str]) -> None:
@@ -36,11 +37,21 @@ class ClobMarketWebSocket:
         book = self.orderbooks.get(token_id)
         return book is None or time.time() - book.updated_at > self.stale_data_seconds
 
+    def stale_reason(self, token_id: str) -> str | None:
+        book = self.orderbooks.get(token_id)
+        if book is None:
+            return "missing_orderbook"
+        age = time.time() - book.updated_at
+        if age > self.stale_data_seconds:
+            return f"stale_orderbook_age_seconds={age:.2f}"
+        return None
+
     async def _run(self, on_update: Callable[[OrderBook], Awaitable[None]] | None) -> None:
         while True:
             try:
                 async with websockets.connect(MARKET_WS_URL, ping_interval=10, ping_timeout=10) as ws:
                     self.connected = True
+                    self.last_stale_reason = ""
                     if self.token_ids:
                         await ws.send(json.dumps({"type": "market", "assets_ids": list(self.token_ids), "custom_feature_enabled": True}))
                     async for message in ws:
@@ -51,10 +62,13 @@ class ClobMarketWebSocket:
                             self.orderbooks[book.yes_token_id] = book
                             if on_update:
                                 await on_update(book)
+                    self.connected = False
+                    self.last_stale_reason = "websocket_closed"
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.connected = False
+                self.last_stale_reason = str(exc)
                 logger.warning("CLOB market websocket reconnecting after error: %s", exc)
                 await asyncio.sleep(2)
 

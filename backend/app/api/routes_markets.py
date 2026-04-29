@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
+from backend.app.api.security import require_local_request
 from backend.app.data.gamma_api import GammaApi
 from backend.app.storage.db import get_session
 from backend.app.storage.repositories import MarketRepository
@@ -23,7 +24,7 @@ async def markets(session: Session = Depends(get_session)) -> list[dict]:
     ]
 
 
-@router.post("/discover")
+@router.post("/discover", dependencies=[Depends(require_local_request)])
 async def discover_markets(request: Request, session: Session = Depends(get_session)) -> dict:
     client = GammaApi(request.app.state.engine.settings)
     try:

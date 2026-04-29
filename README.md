@@ -132,13 +132,14 @@ cd "C:\Users\Maher\Documents\New project\polymarket-copy-bot"
 
 ```powershell
 python -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
 ```
 
 6. Install backend dependencies:
 
 ```powershell
-pip install -r backend\requirements.txt
+python -m pip install -r backend\requirements.txt
 ```
 
 7. Create your local environment file:
@@ -211,6 +212,24 @@ Run backend tests:
 pytest backend/app/tests
 ```
 
+Run a full local verification:
+
+```powershell
+python -m pytest backend/app/tests
+python -m compileall -q backend
+
+cd frontend
+npm install
+npm run build
+```
+
+Check local services:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health
+Invoke-WebRequest http://127.0.0.1:5173 -UseBasicParsing
+```
+
 ## Current Implementation Phase
 
 Implemented now:
@@ -218,8 +237,15 @@ Implemented now:
 - Phase 1: folder restructure, config, DB models, paper executor, risk engine, dashboard live state.
 - Phase 2 foundation: Gamma, Data API, CLOB REST, CLOB WebSocket client scaffolds.
 - Phase 3 foundation: signal modules and aggregator, paper demo tick.
-- Phase 4 safety: REAL executor guarded behind environment flags, with order placement stubbed until authenticated CLOB setup is reviewed.
+- Phase 4 foundation: REAL executor guarded behind environment flags, runtime confirmation, and risk checks.
 - Phase 5 foundation: analytics modules for PnL, performance, attribution, and backtesting scaffold.
+
+Additional safety locks:
+
+- Mutating bot routes reject non-local clients.
+- REAL mode start requires env safety flags plus runtime confirmation.
+- Demo tick is disabled in REAL mode.
+- Paper and REAL executors reject stale orderbook data.
 
 ## Important Notes
 

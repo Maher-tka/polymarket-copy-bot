@@ -1,3 +1,5 @@
+import time
+
 from backend.app.config import Settings
 from backend.app.execution.executor_base import Executor
 from backend.app.risk.risk_engine import RiskDecision
@@ -31,6 +33,10 @@ class RealExecutor(Executor):
             raise RuntimeError("REAL trading is disabled by env safety flags.")
         if not risk.accepted:
             raise RuntimeError(f"Risk engine blocked real order: {'; '.join(risk.reasons)}")
+        if time.time() - orderbook.updated_at > self.settings.stale_data_seconds:
+            raise RuntimeError("Risk engine cannot be bypassed with stale orderbook data.")
+        if orderbook.spread > self.settings.max_spread:
+            raise RuntimeError("Risk engine cannot be bypassed with a wide spread.")
         if self.settings.polymarket_private_key is None:
             raise RuntimeError("Missing private key.")
 

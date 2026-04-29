@@ -1,9 +1,18 @@
+import { useState } from "react";
+
 import { botAction } from "../api";
 
 export default function BotControls({ onRefresh }) {
+  const [error, setError] = useState("");
+
   async function run(action) {
-    await botAction(action);
-    await onRefresh();
+    try {
+      setError("");
+      await botAction(action);
+      await onRefresh();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   return (
@@ -13,6 +22,7 @@ export default function BotControls({ onRefresh }) {
       <button onClick={() => run("stop")}>Stop</button>
       <button onClick={() => run("demo-tick")}>Demo Tick</button>
       <button className="dangerButton" onClick={() => run("emergency-stop")}>Emergency Stop</button>
+      {error ? <span className="controlError">{error}</span> : null}
     </section>
   );
 }

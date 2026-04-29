@@ -122,6 +122,12 @@ td {
   background: #3b1115;
 }
 
+.controlError {
+  color: #fecaca;
+  font-size: 0.8rem;
+  align-self: center;
+}
+
 .row {
   display: flex;
   justify-content: space-between;

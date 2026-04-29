@@ -16,6 +16,17 @@ def test_paper_executor_updates_cash_positions_and_trade_history():
     assert len(executor.trades) == 1
 
 
+def test_paper_executor_rejects_stale_orderbook():
+    executor = PaperExecutor(Settings(_env_file=None))
+    stale_book = orderbook(updated_at=time.time() - 60)
+
+    result = asyncio.run(executor.execute(decision(), market(), stale_book, 10))
+
+    assert result["status"] == "SKIPPED"
+    assert result["reason"] == "Orderbook data is stale."
+    assert len(executor.trades) == 0
+
+
 def decision():
     return AggregatedDecision("m1", Decision.BUY_YES, 0.8, 0.08, [], {})
 
@@ -24,5 +35,11 @@ def market():
     return Market("m1", "Will executor work?", "executor", "yes", "no", 5000, 10000, time.time() + 3600)
 
 
-def orderbook():
-    return OrderBook("m1", "yes", asks=[OrderBookLevel(0.50, 100)], bids=[OrderBookLevel(0.49, 100)], updated_at=time.time())
+def orderbook(updated_at=None):
+    return OrderBook(
+        "m1",
+        "yes",
+        asks=[OrderBookLevel(0.50, 100)],
+        bids=[OrderBookLevel(0.49, 100)],
+        updated_at=updated_at or time.time(),
+    )

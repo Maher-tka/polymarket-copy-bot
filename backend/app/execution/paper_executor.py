@@ -1,3 +1,5 @@
+import time
+
 from backend.app.config import Settings
 from backend.app.execution.executor_base import Executor
 from backend.app.execution.fill_simulator import FillSimulator
@@ -19,6 +21,8 @@ class PaperExecutor(Executor):
     async def execute(self, decision: AggregatedDecision, market: Market, orderbook: OrderBook, size_usd: float) -> dict:
         if decision.decision not in {Decision.BUY_YES, Decision.BUY_NO}:
             return {"status": "SKIPPED", "reason": "Decision is not buyable."}
+        if time.time() - orderbook.updated_at > self.settings.stale_data_seconds:
+            return {"status": "SKIPPED", "reason": "Orderbook data is stale."}
         limit_price = orderbook.best_ask
         if limit_price is None:
             return {"status": "SKIPPED", "reason": "No ask price."}
