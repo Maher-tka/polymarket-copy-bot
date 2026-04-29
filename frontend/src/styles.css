@@ -1,0 +1,155 @@
+:root {
+  color: #e5eefb;
+  background: #08111f;
+  font-family: Inter, ui-sans-serif, system-ui, Segoe UI, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button {
+  border: 1px solid #2c3a4f;
+  border-radius: 6px;
+  background: #111c2e;
+  color: #e5eefb;
+  padding: 0.65rem 0.9rem;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #17253b;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+th,
+td {
+  border-bottom: 1px solid #223149;
+  padding: 0.6rem;
+  text-align: left;
+}
+
+.screen {
+  min-height: 100vh;
+  padding: 1rem;
+  background: #08111f;
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto repeat(4, minmax(120px, auto));
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.topbar p,
+.muted {
+  color: #9ca3af;
+  margin: 0.25rem 0 0;
+}
+
+.panel,
+.metric,
+.mode {
+  border: 1px solid #223149;
+  border-radius: 8px;
+  background: #0d1728;
+  padding: 1rem;
+}
+
+.metric span {
+  display: block;
+  color: #9ca3af;
+  font-size: 0.75rem;
+}
+
+.metric strong,
+.mode {
+  font-size: 1rem;
+}
+
+.mode {
+  font-weight: 800;
+  text-align: center;
+}
+
+.mode.paper {
+  color: #34d399;
+}
+
+.mode.real {
+  color: #f87171;
+}
+
+.grid {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.danger,
+.dangerButton {
+  border-color: #7f1d1d;
+  color: #fecaca;
+}
+
+.dangerButton {
+  background: #3b1115;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid #1f2a3d;
+  padding: 0.55rem 0;
+}
+
+.badge {
+  display: inline-block;
+  margin: 0.35rem 0.35rem 0 0;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+.logbox {
+  max-height: 250px;
+  overflow: auto;
+  color: #cbd5e1;
+  font-family: Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+@media (max-width: 1050px) {
+  .topbar,
+  .grid.two {
+    grid-template-columns: 1fr;
+  }
+}

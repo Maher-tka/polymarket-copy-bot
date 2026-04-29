@@ -1,9 +1,16 @@
 node_modules/
+frontend/node_modules/
 dist/
+.venv/
+__pycache__/
+*.pyc
 .env
 .env.*
 !.env.example
-data/
+!backend/.env.example
+/data/
+backend/app/storage/*.db
+backend/app/storage/*.sqlite
 *.log
 server.*.log
 demo-smoke.*

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+data/
+*.log
+server.*.log
+demo-smoke.*
+.DS_Store
+npm-debug.log*
+*.local
+.codex/
