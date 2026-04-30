@@ -26,6 +26,8 @@ The bot is no longer only a copy-trading bot. The main research stack is:
 5. Optional news/event signal, disabled by default until tested
 6. Optional Fear Seller strategy, disabled by default because of tail risk
 
+The scanner intentionally diversifies the paper research set across buckets like crypto up, crypto down, weather, sports, politics, and general markets. This lets the dashboard compare what is actually making or losing money instead of only learning from one or two similar positions.
+
 Signal aggregation uses:
 
 ```text
@@ -119,6 +121,7 @@ The local PDF guide recommendations are reflected in these modules:
 - Research audit CSVs for every scored signal and paper fill: `backend/app/analytics/research_audit.py`
 - Optional cached Metaculus external probability provider, disabled by default: `backend/app/data/external_probability.py`
 - Recent trade-flow imbalance for microstructure when WebSocket trade events provide size/side: `backend/app/data/clob_ws.py`, `backend/app/strategy/microstructure.py`
+- Diversified market discovery and bucket performance learning: `backend/app/data/gamma_api.py`, `backend/app/core/bot_engine.py`
 
 The bot remains PAPER by default. The guide’s real-money signing examples were not enabled automatically.
 
@@ -248,6 +251,11 @@ WEBSOCKET_HEARTBEAT_SECONDS=10
 AUDIT_LOG_DIR=data/research_audit
 EXTERNAL_PROBABILITY_PROVIDER=mock
 ENABLE_IMPOSSIBILITY_SELLER=false
+MARKET_DISCOVERY_LIMIT=240
+MARKET_SCAN_LIMIT=36
+MAX_PAPER_TRADES_PER_CYCLE=4
+MARKET_FOCUS_KEYWORDS=bitcoin,btc,ethereum,eth,solana,sol,crypto,weather,temperature,rain,snow,hurricane,storm
+MARKET_BUCKET_ORDER=crypto_up,crypto_down,weather,crypto_fear,sports,politics,general
 ```
 
 ## Testing

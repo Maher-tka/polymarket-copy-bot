@@ -208,6 +208,7 @@ class BotEngine:
                 "yes_token_id": market.yes_token_id,
                 "no_token_id": market.no_token_id,
                 "correlation_group": market.correlation_group,
+                "research_bucket": market.research_bucket,
             }
             for market in markets
         ]
@@ -289,6 +290,7 @@ class BotEngine:
                 "components": decision.components,
                 "metadata": decision.metadata,
                 "correlation_group": market.correlation_group,
+                "research_bucket": market.research_bucket,
             },
         )
         self.state.state.last_decisions = self.state.state.last_decisions[:100]
@@ -322,6 +324,7 @@ class BotEngine:
         self.state.state.trades = list(reversed(self.paper_executor.trades[-100:]))
         self.state.state.win_loss_history = self._win_loss_history()
         self.state.state.performance_summary = self._performance_summary(self.state.state.win_loss_history)
+        self.state.state.bucket_performance = self._bucket_performance()
         self.state.state.audit_summary = self.audit_log.summary()
         self.state.state.fear_seller = self.impossibility_seller.summary(self.state.state.positions, nav=self.paper_executor.nav)
         self.state.state.blocked_reasons = list(self.circuit_breaker.blocked_reasons)
@@ -388,6 +391,7 @@ class BotEngine:
                     "pnl_pct": position.get("pnl_pct", 0.0),
                     "opened_at": position.get("opened_at"),
                     "last_updated_at": position.get("last_updated_at"),
+                    "research_bucket": position.get("research_bucket", "general"),
                 }
             )
         return history[:100]
@@ -409,6 +413,53 @@ class BotEngine:
             "largest_open_win": round(largest_win, 4),
             "largest_open_loss": round(largest_loss, 4),
         }
+
+    def _bucket_performance(self) -> list[dict]:
+        buckets: dict[str, dict] = {}
+        for market in self.state.state.markets:
+            bucket = market.get("research_bucket") or "general"
+            item = buckets.setdefault(bucket, empty_bucket(bucket))
+            item["markets"] += 1
+        for decision in self.state.state.last_decisions:
+            bucket = decision.get("research_bucket") or "general"
+            item = buckets.setdefault(bucket, empty_bucket(bucket))
+            item["decisions"] += 1
+            item["score_total"] += float(decision.get("score", 0.0))
+            if decision.get("risk_ok") is False:
+                item["blocked"] += 1
+        for trade in self.paper_executor.trades:
+            bucket = trade.get("research_bucket") or "general"
+            item = buckets.setdefault(bucket, empty_bucket(bucket))
+            item["trades"] += 1
+            item["deployed"] += float(trade.get("size_usd", 0.0))
+        for position in self._position_snapshots():
+            bucket = position.get("research_bucket") or "general"
+            item = buckets.setdefault(bucket, empty_bucket(bucket))
+            item["open_positions"] += 1
+            item["exposure"] += float(position.get("cost_basis", 0.0))
+            item["open_pnl"] += float(position.get("unrealized_pnl", 0.0))
+            if position.get("win_loss") == "WIN":
+                item["wins"] += 1
+            elif position.get("win_loss") == "LOSS":
+                item["losses"] += 1
+
+        result = []
+        bucket_order = [bucket.strip() for bucket in self.settings.market_bucket_order.split(",") if bucket.strip()]
+        ordered_keys = bucket_order + [bucket for bucket in buckets if bucket not in bucket_order]
+        for bucket in ordered_keys:
+            if bucket not in buckets:
+                continue
+            item = buckets[bucket]
+            decisions = item.pop("decisions")
+            item["avg_score"] = round(item.pop("score_total") / decisions, 4) if decisions else 0.0
+            item["decisions"] = decisions
+            item["deployed"] = round(item["deployed"], 4)
+            item["exposure"] = round(item["exposure"], 4)
+            item["open_pnl"] = round(item["open_pnl"], 4)
+            decided = item["wins"] + item["losses"]
+            item["open_win_rate"] = round(item["wins"] / decided, 4) if decided else 0.0
+            result.append(item)
+        return result
 
     def _websocket_message_age(self) -> float | None:
         if not self.market_ws.last_message_at:
@@ -515,3 +566,22 @@ def classify_pnl(pnl: float) -> str:
     if pnl < -0.01:
         return "LOSS"
     return "BREAKEVEN"
+
+
+def empty_bucket(bucket: str) -> dict:
+    return {
+        "bucket": bucket,
+        "markets": 0,
+        "decisions": 0,
+        "blocked": 0,
+        "trades": 0,
+        "open_positions": 0,
+        "wins": 0,
+        "losses": 0,
+        "deployed": 0.0,
+        "exposure": 0.0,
+        "open_pnl": 0.0,
+        "score_total": 0.0,
+        "avg_score": 0.0,
+        "open_win_rate": 0.0,
+    }

@@ -18,6 +18,7 @@ class RuntimeState:
     open_orders: list[dict] = field(default_factory=list)
     trades: list[dict] = field(default_factory=list)
     fear_seller: dict = field(default_factory=dict)
+    bucket_performance: list[dict] = field(default_factory=list)
     win_loss_history: list[dict] = field(default_factory=list)
     performance_summary: dict = field(default_factory=dict)
     logs: deque[str] = field(default_factory=lambda: deque(maxlen=200))

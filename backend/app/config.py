@@ -48,9 +48,15 @@ class Settings(BaseSettings):
     websocket_heartbeat_seconds: int = 10
     paper_loop_interval_seconds: int = 15
     market_refresh_seconds: int = 300
-    market_discovery_limit: int = 60
-    market_scan_limit: int = 12
-    max_paper_trades_per_cycle: int = 2
+    market_discovery_limit: int = 240
+    market_scan_limit: int = 36
+    max_paper_trades_per_cycle: int = 4
+    market_focus_keywords: str = (
+        "bitcoin,btc,ethereum,eth,solana,sol,crypto,weather,temperature,rain,snow,hurricane,storm"
+    )
+    market_bucket_order: str = "crypto_up,crypto_down,weather,crypto_fear,sports,politics,general"
+    learning_min_liquidity: float = 100.0
+    learning_min_volume: float = 50.0
     audit_log_dir: str = "data/research_audit"
     external_probability_provider: Literal["mock", "metaculus"] = "mock"
     metaculus_cache_ttl_seconds: int = 900

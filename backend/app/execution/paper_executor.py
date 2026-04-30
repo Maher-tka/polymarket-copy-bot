@@ -74,6 +74,7 @@ class PaperExecutor(Executor):
                 "slippage_usd": 0.0,
                 "strategy": decision.metadata.get("strategy"),
                 "bucket": decision.metadata.get("bucket"),
+                "research_bucket": market.research_bucket,
             },
         )
         position["question"] = position.get("question") or market.question
@@ -98,6 +99,7 @@ class PaperExecutor(Executor):
             "slippage_usd": fill.slippage_usd,
             "strategy": decision.metadata.get("strategy"),
             "bucket": decision.metadata.get("bucket"),
+            "research_bucket": market.research_bucket,
             "created_at": time.time(),
         }
         self.trades.append(trade)

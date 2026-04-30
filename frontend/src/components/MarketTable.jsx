@@ -6,6 +6,7 @@ export default function MarketTable({ decisions, markets = [], compact = false }
     edge: 0,
     decision: "WATCH",
     risk_ok: true,
+    research_bucket: market.research_bucket,
     reasons: [market.question],
   }));
 
@@ -22,7 +23,7 @@ export default function MarketTable({ decisions, markets = [], compact = false }
             <tr key={`${item.market_id}-${index}`}>
               <td>
                 <strong>{item.question || item.market_id}</strong>
-                {!compact && item.reasons?.[0] ? <span>{item.reasons[0]}</span> : null}
+                {!compact ? <span>{labelize(item.research_bucket || "general")} · {item.reasons?.[0] || ""}</span> : null}
               </td>
               <td><ScoreBadge value={item.score} /></td>
               <td>{(Number(item.edge || 0) * 100).toFixed(1)}% / {(Number(item.adjusted_edge ?? item.edge ?? 0) * 100).toFixed(1)}%</td>
@@ -34,6 +35,10 @@ export default function MarketTable({ decisions, markets = [], compact = false }
       </table>
     </section>
   );
+}
+
+function labelize(value) {
+  return String(value || "general").replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function ScoreBadge({ value }) {

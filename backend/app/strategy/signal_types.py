@@ -66,6 +66,7 @@ class Market:
     end_ts: float | None
     active: bool = True
     correlation_group: str | None = None
+    research_bucket: str = "general"
 
 
 @dataclass(slots=True)

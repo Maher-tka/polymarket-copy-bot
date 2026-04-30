@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Activity, BarChart3, Gauge, History, Shield } from "lucide-react";
 
 import BotControls from "./BotControls.jsx";
+import BucketPerformancePanel from "./BucketPerformancePanel.jsx";
 import FearSellerPanel from "./FearSellerPanel.jsx";
 import LogsPanel from "./LogsPanel.jsx";
 import MarketTable from "./MarketTable.jsx";
@@ -67,6 +68,9 @@ export default function Dashboard({ state, onRefresh }) {
               <OrderbookPanel state={state} />
             </section>
             <section className="contentGrid single">
+              <BucketPerformancePanel buckets={state.bucket_performance || []} />
+            </section>
+            <section className="contentGrid single">
               <FearSellerPanel summary={state.fear_seller || {}} />
             </section>
             <section className="contentGrid primary">
@@ -83,6 +87,7 @@ export default function Dashboard({ state, onRefresh }) {
           <section className="contentGrid scanner">
             <MarketTable decisions={decisions} markets={state.markets || []} />
             <div className="stack">
+              <BucketPerformancePanel buckets={state.bucket_performance || []} />
               <SignalBreakdown decisions={decisions} />
               <OrderbookPanel state={state} />
             </div>

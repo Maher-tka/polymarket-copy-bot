@@ -1,4 +1,6 @@
 import time
+from collections import defaultdict
+import re
 
 import httpx
 
@@ -16,10 +18,7 @@ class GammaApi:
         await self.client.aclose()
 
     async def active_markets(self, limit: int = 100) -> list[Market]:
-        response = await self.client.get("/markets", params={"active": "true", "closed": "false", "limit": limit})
-        response.raise_for_status()
-        raw = response.json()
-        items = raw if isinstance(raw, list) else raw.get("markets", [])
+        items = await self._fetch_market_pool(limit)
         markets: list[Market] = []
         for item in items:
             tokens = parse_jsonish_list(item.get("clobTokenIds"))
@@ -41,12 +40,101 @@ class GammaApi:
                     item.get("question") or item.get("title") or item["conditionId"],
                     item.get("slug"),
                 ),
+                research_bucket=infer_research_bucket(item.get("question") or item.get("title") or "", item.get("slug")),
             )
-            if market.liquidity >= self.settings.min_liquidity and market.volume >= self.settings.min_volume:
+            if should_include_market(market, self.settings):
                 if market.end_ts and market.end_ts - time.time() < self.settings.market_close_buffer_minutes * 60:
                     continue
                 markets.append(market)
-        return markets
+        return diversify_markets(markets, self.settings.market_bucket_order, self.settings.market_focus_keywords)
+
+    async def _fetch_market_pool(self, limit: int) -> list[dict]:
+        pool: list[dict] = []
+        seen: set[str] = set()
+        page_size = min(100, max(1, limit))
+        for offset in range(0, limit, page_size):
+            response = await self.client.get(
+                "/markets",
+                params={
+                    "active": "true",
+                    "closed": "false",
+                    "limit": page_size,
+                    "offset": offset,
+                    "order": "volume",
+                    "ascending": "false",
+                },
+            )
+            response.raise_for_status()
+            raw = response.json()
+            items = raw if isinstance(raw, list) else raw.get("markets", [])
+            if not items:
+                break
+            for item in items:
+                market_id = item.get("conditionId") or item.get("id") or item.get("slug")
+                if not market_id or market_id in seen:
+                    continue
+                seen.add(market_id)
+                pool.append(item)
+            if len(items) < page_size:
+                break
+        return pool
+
+
+def diversify_markets(markets: list[Market], bucket_order: str, focus_keywords: str = "") -> list[Market]:
+    grouped: dict[str, list[Market]] = defaultdict(list)
+    for market in markets:
+        grouped[market.research_bucket].append(market)
+    for bucket_markets in grouped.values():
+        bucket_markets.sort(
+            key=lambda market: (is_focus_market(market, focus_keywords), market.volume, market.liquidity),
+            reverse=True,
+        )
+
+    ordered_buckets = [bucket.strip() for bucket in bucket_order.split(",") if bucket.strip()]
+    ordered_buckets.extend(bucket for bucket in grouped if bucket not in ordered_buckets)
+    diversified: list[Market] = []
+    while True:
+        added = False
+        for bucket in ordered_buckets:
+            if grouped.get(bucket):
+                diversified.append(grouped[bucket].pop(0))
+                added = True
+        if not added:
+            return diversified
+
+
+def infer_research_bucket(question: str, slug: str | None = None) -> str:
+    text = f"{question} {slug or ''}".lower()
+    if any(word in text for word in ("weather", "temperature", "rain", "snow", "hurricane", "storm", "heat", "cold")):
+        return "weather"
+    if has_any_token(text, ("bitcoin", "btc", "ethereum", "eth", "solana", "sol", "crypto")):
+        if any(word in text for word in ("below", "under", "fall", "drop", "crash", "down", "lower")):
+            return "crypto_down"
+        if any(word in text for word in ("above", "over", "rise", "rally", "up", "higher", "hit", "reach")):
+            return "crypto_up"
+        return "crypto_fear"
+    if any(word in text for word in ("nba", "nfl", "nhl", "mlb", "fifa", "cup", "finals", "championship")):
+        return "sports"
+    if any(word in text for word in ("trump", "election", "president", "senate", "house", "government")):
+        return "politics"
+    return "general"
+
+
+def has_any_token(text: str, tokens: tuple[str, ...]) -> bool:
+    return any(re.search(rf"(^|[^a-z0-9]){re.escape(token)}([^a-z0-9]|$)", text) for token in tokens)
+
+
+def is_focus_market(market: Market, focus_keywords: str) -> bool:
+    text = f"{market.question} {market.slug or ''}".lower()
+    return any(keyword.strip().lower() in text for keyword in focus_keywords.split(",") if keyword.strip())
+
+
+def should_include_market(market: Market, settings: Settings) -> bool:
+    if market.liquidity >= settings.min_liquidity and market.volume >= settings.min_volume:
+        return True
+    if not is_focus_market(market, settings.market_focus_keywords):
+        return False
+    return market.liquidity >= settings.learning_min_liquidity and market.volume >= settings.learning_min_volume
 
 
 def parse_jsonish_list(value) -> list[str]:
