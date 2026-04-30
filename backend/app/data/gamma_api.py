@@ -46,6 +46,8 @@ class GammaApi:
                 if market.end_ts and market.end_ts - time.time() < self.settings.market_close_buffer_minutes * 60:
                     continue
                 markets.append(market)
+        allowed_buckets = parse_csv(self.settings.market_allowed_buckets)
+        markets = [market for market in markets if not allowed_buckets or market.research_bucket in allowed_buckets]
         return diversify_markets(markets, self.settings.market_bucket_order, self.settings.market_focus_keywords)
 
     async def _fetch_market_pool(self, limit: int) -> list[dict]:
@@ -135,6 +137,10 @@ def should_include_market(market: Market, settings: Settings) -> bool:
     if not is_focus_market(market, settings.market_focus_keywords):
         return False
     return market.liquidity >= settings.learning_min_liquidity and market.volume >= settings.learning_min_volume
+
+
+def parse_csv(value: str) -> set[str]:
+    return {item.strip() for item in value.split(",") if item.strip()}
 
 
 def parse_jsonish_list(value) -> list[str]:

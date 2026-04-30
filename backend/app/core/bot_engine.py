@@ -10,6 +10,7 @@ from backend.app.data.external_probability import MetaculusProbabilityProvider, 
 from backend.app.data.gamma_api import GammaApi
 from backend.app.data.news_feed import NewsFeed
 from backend.app.data.price_feed import StaticPriceFeed
+from backend.app.data.trader_discovery import NicheTraderDiscovery
 from backend.app.execution.order_manager import OrderManager
 from backend.app.execution.paper_executor import PaperExecutor
 from backend.app.execution.real_executor import RealExecutor
@@ -22,6 +23,7 @@ from backend.app.storage.repositories import MarketRepository, TradeRepository
 from backend.app.strategy.calibration_arbitrage import CalibrationArbitrageStrategy
 from backend.app.strategy.impossibility_seller import ImpossibilitySellerStrategy, cap_fear_seller_size
 from backend.app.strategy.microstructure import MicrostructureStrategy
+from backend.app.strategy.niche_copy_trading import NicheCopyTradingStrategy
 from backend.app.strategy.news_reaction import NewsReactionStrategy
 from backend.app.strategy.signal_aggregator import SignalAggregator
 from backend.app.strategy.signal_types import Decision, Market, OrderBook, OrderBookLevel
@@ -44,13 +46,16 @@ class BotEngine:
         self.audit_log = ResearchAuditLog(settings.audit_log_dir)
         self.probability_provider = self._probability_provider(settings)
         self._loop_task: asyncio.Task | None = None
+        self._market_discovery_task: asyncio.Task | None = None
         self._markets_cache: list[Market] = []
         self._market_group_by_id: dict[str, str] = {}
         self._last_market_refresh = 0.0
         self._high_water_nav = settings.paper_start_balance
         self.market_ws = ClobMarketWebSocket(settings.stale_data_seconds, settings.websocket_heartbeat_seconds)
+        self.trader_discovery = NicheTraderDiscovery(settings)
         self.impossibility_seller = ImpossibilitySellerStrategy(settings, StaticPriceFeed())
         self.strategies = [
+            NicheCopyTradingStrategy(settings, self.trader_discovery),
             CalibrationArbitrageStrategy(settings, self.probability_provider),
             MicrostructureStrategy(settings),
             SpreadCaptureStrategy(settings),
@@ -63,6 +68,8 @@ class BotEngine:
         self.circuit_breaker.paused = False
         self.state.state.status = "RUNNING"
         self.state.log("Bot started.")
+        await self.trader_discovery.start()
+        self._ensure_market_discovery_loop()
         if self.settings.bot_mode == "PAPER":
             self._ensure_loop()
         else:
@@ -72,11 +79,15 @@ class BotEngine:
         self.circuit_breaker.paused = True
         self.state.state.status = "PAUSED"
         await self._stop_loop()
+        await self._stop_market_discovery_loop()
+        await self.trader_discovery.stop()
         self.state.log("Bot paused.")
 
     async def stop(self) -> None:
         self.state.state.status = "STOPPED"
         await self._stop_loop()
+        await self._stop_market_discovery_loop()
+        await self.trader_discovery.stop()
         self.state.log("Bot stopped.")
 
     async def shutdown(self) -> None:
@@ -90,6 +101,8 @@ class BotEngine:
         self.state.state.status = "EMERGENCY_STOP"
         self.state.state.open_orders.clear()
         await self._stop_loop()
+        await self._stop_market_discovery_loop()
+        await self.trader_discovery.stop()
         self.state.log("Emergency stop activated. Open orders cancelled.")
 
     def dashboard_state(self) -> dict:
@@ -101,6 +114,17 @@ class BotEngine:
             return
         self._loop_task = asyncio.create_task(self._paper_market_loop())
         self.state.state.loop_running = True
+
+    def _ensure_market_discovery_loop(self) -> None:
+        if self._market_discovery_task and not self._market_discovery_task.done():
+            return
+        self._market_discovery_task = asyncio.create_task(self._market_discovery_loop())
+
+    async def _stop_market_discovery_loop(self) -> None:
+        if self._market_discovery_task and not self._market_discovery_task.done():
+            self._market_discovery_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._market_discovery_task
 
     async def _stop_loop(self) -> None:
         self.state.state.loop_running = False
@@ -127,6 +151,17 @@ class BotEngine:
             await asyncio.sleep(max(1, self.settings.paper_loop_interval_seconds - elapsed))
         self.state.state.loop_running = False
 
+    async def _market_discovery_loop(self) -> None:
+        while self.state.state.status == "RUNNING" and not self.circuit_breaker.emergency_stop:
+            try:
+                await self._refresh_market_cache()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.state.state.last_error = str(exc)
+                self.state.log(f"Market discovery error: {exc}")
+            await asyncio.sleep(self.settings.market_refresh_seconds)
+
     async def _run_paper_cycle(self) -> None:
         self.state.state.cycle_count += 1
         self.state.state.last_cycle_at = time.time()
@@ -135,7 +170,7 @@ class BotEngine:
             self.state.log(f"Cancelled {cancelled} stale paper maker order{'' if cancelled == 1 else 's'}.")
         markets = await self._active_markets()
         if not markets:
-            self.state.log("No eligible live markets found yet.")
+            self.state.log("Waiting for background market discovery.")
             return
 
         scanned = 0
@@ -183,12 +218,13 @@ class BotEngine:
         )
 
     async def _active_markets(self) -> list[Market]:
-        now = time.time()
-        if self._markets_cache and now - self._last_market_refresh < self.settings.market_refresh_seconds:
+        if self._markets_cache:
             self.market_ws.subscribe([market.yes_token_id for market in self._markets_cache[: self.settings.market_scan_limit]])
             await self.market_ws.start()
-            return self._markets_cache
+        return self._markets_cache
 
+    async def _refresh_market_cache(self) -> None:
+        now = time.time()
         gamma = GammaApi(self.settings)
         try:
             markets = await gamma.active_markets(limit=self.settings.market_discovery_limit)
@@ -217,7 +253,6 @@ class BotEngine:
         self.market_ws.subscribe([market.yes_token_id for market in markets[: self.settings.market_scan_limit]])
         await self.market_ws.start()
         self.state.log(f"Discovered {len(markets)} eligible live markets.")
-        return markets
 
     async def _get_orderbook(self, clob: ClobRestClient, market: Market) -> tuple[OrderBook, str]:
         cached = self.market_ws.orderbooks.get(market.yes_token_id)
@@ -327,6 +362,7 @@ class BotEngine:
         self.state.state.bucket_performance = self._bucket_performance()
         self.state.state.audit_summary = self.audit_log.summary()
         self.state.state.fear_seller = self.impossibility_seller.summary(self.state.state.positions, nav=self.paper_executor.nav)
+        self.state.state.niche_copy = self.trader_discovery.summary()
         self.state.state.blocked_reasons = list(self.circuit_breaker.blocked_reasons)
         self.state.state.websocket_connected = self.market_ws.connected
         self.state.state.websocket_last_message_age_seconds = self._websocket_message_age()

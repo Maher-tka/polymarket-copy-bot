@@ -9,6 +9,9 @@ export default function SettingsPanel({ state }) {
       <div className="row"><span>Mode</span><strong>{state.mode}</strong></div>
       <div className="row"><span>REAL safety</span><strong>{state.mode === "REAL" ? "Runtime confirm required" : "Disabled"}</strong></div>
       <div className="row"><span>Strategies</span><strong>Calibration / Microstructure / Spread</strong></div>
+      <div className="row"><span>Copy niches</span><strong>Crypto up/down + weather</strong></div>
+      <div className="row"><span>Top-trader discovery</span><strong>{state.niche_copy?.enabled ? "Background cache" : "Disabled"}</strong></div>
+      <div className="row"><span>Copy confirmation</span><strong>{state.niche_copy?.requires_confirmation ? "Required" : "Not required"}</strong></div>
       <div className="row"><span>Emergency stop</span><strong>Always visible</strong></div>
       <div className="row"><span>Live loop</span><strong>{state.loop_running ? "Active" : "Idle"}</strong></div>
       <div className="row"><span>Data source</span><strong>{state.data_source || "idle"}</strong></div>

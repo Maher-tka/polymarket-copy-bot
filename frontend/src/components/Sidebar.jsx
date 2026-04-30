@@ -1,8 +1,9 @@
-import { Activity, AlertTriangle, BarChart3, Gauge, History, Moon, Search, Settings, Shield } from "lucide-react";
+import { Activity, AlertTriangle, BarChart3, Gauge, History, Moon, Search, Settings, Shield, Trophy } from "lucide-react";
 
 const items = [
   { id: "overview", label: "Overview", icon: BarChart3 },
   { id: "scanner", label: "Markets", icon: Search },
+  { id: "copy", label: "Top Traders", icon: Trophy },
   { id: "fear", label: "Fear Seller", icon: AlertTriangle },
   { id: "risk", label: "Risk", icon: Shield },
   { id: "activity", label: "Activity", icon: History },

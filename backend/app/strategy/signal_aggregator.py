@@ -10,6 +10,7 @@ WEIGHTS = {
     "spread_capture": 0.20,
     "smart_money": 0.10,
     "impossibility_seller": 1.00,
+    "niche_copy_trading": 1.00,
 }
 
 
@@ -44,6 +45,8 @@ class SignalAggregator:
         min_edge = (
             self.settings.imp_min_edge
             if metadata_by_side.get(winning_side, {}).get("strategy") == "impossibility_seller"
+            else self.settings.copy_trade_min_edge
+            if metadata_by_side.get(winning_side, {}).get("strategy") == "niche_copy_trading"
             else self.settings.min_expected_edge
         )
         if final_score < self.settings.final_score_threshold:

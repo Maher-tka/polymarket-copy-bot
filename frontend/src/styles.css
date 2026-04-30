@@ -821,6 +821,111 @@ td span {
   gap: 0.5rem;
 }
 
+.copyStatusGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-bottom: 0.85rem;
+}
+
+.copyStatusGrid div,
+.copyBucket,
+.copyTrader,
+.copySignal {
+  border: 1px solid #2b2739;
+  border-radius: 8px;
+  background: #15131d;
+}
+
+.copyStatusGrid div {
+  padding: 0.75rem;
+}
+
+.copyStatusGrid span,
+.copyTrader span,
+.copySignal span,
+.copyBucketTitle span {
+  display: block;
+  color: #8f8a9d;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.copyStatusGrid strong {
+  display: block;
+  margin-top: 0.22rem;
+}
+
+.copyNote,
+.copyError {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.copyNote {
+  border: 1px solid #31455c;
+  background: #0d1824;
+  color: #bfdbfe;
+}
+
+.copyError {
+  border: 1px solid #80313a;
+  background: #241114;
+  color: #fecaca;
+}
+
+.copyGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+  gap: 0.85rem;
+}
+
+.copyColumn,
+.copyBucketList,
+.copySignalList {
+  display: grid;
+  gap: 0.65rem;
+  align-content: start;
+}
+
+.miniPanelHeader,
+.copyBucketTitle,
+.copyTrader,
+.copySignal {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.miniPanelHeader {
+  color: #dcd7ea;
+}
+
+.copyBucket {
+  padding: 0.75rem;
+}
+
+.copyBucketTitle {
+  margin-bottom: 0.55rem;
+}
+
+.copyTrader,
+.copySignal {
+  padding: 0.58rem 0.65rem;
+  margin-top: 0.45rem;
+}
+
+.copyTrader > div:last-child,
+.copySignal > div:last-child {
+  text-align: right;
+}
+
 .healthDot {
   width: 10px;
   height: 10px;
@@ -881,7 +986,9 @@ td span {
   .contentGrid.single,
   .heroGrid,
   .statGrid,
-  .fearCandidateMetrics {
+  .fearCandidateMetrics,
+  .copyStatusGrid,
+  .copyGrid {
     grid-template-columns: 1fr 1fr;
   }
 }
@@ -951,7 +1058,9 @@ td span {
   .historySummary,
   .heroMeta,
   .fearStats,
-  .fearCandidateMetrics {
+  .fearCandidateMetrics,
+  .copyStatusGrid,
+  .copyGrid {
     grid-template-columns: 1fr;
   }
 

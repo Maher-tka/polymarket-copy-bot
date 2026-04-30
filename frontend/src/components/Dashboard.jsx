@@ -6,6 +6,7 @@ import BucketPerformancePanel from "./BucketPerformancePanel.jsx";
 import FearSellerPanel from "./FearSellerPanel.jsx";
 import LogsPanel from "./LogsPanel.jsx";
 import MarketTable from "./MarketTable.jsx";
+import NicheCopyPanel from "./NicheCopyPanel.jsx";
 import OrderbookPanel from "./OrderbookPanel.jsx";
 import PnlChart from "./PnlChart.jsx";
 import PositionsPanel from "./PositionsPanel.jsx";
@@ -71,6 +72,9 @@ export default function Dashboard({ state, onRefresh }) {
               <BucketPerformancePanel buckets={state.bucket_performance || []} />
             </section>
             <section className="contentGrid single">
+              <NicheCopyPanel summary={state.niche_copy || {}} />
+            </section>
+            <section className="contentGrid single">
               <FearSellerPanel summary={state.fear_seller || {}} />
             </section>
             <section className="contentGrid primary">
@@ -88,6 +92,7 @@ export default function Dashboard({ state, onRefresh }) {
             <MarketTable decisions={decisions} markets={state.markets || []} />
             <div className="stack">
               <BucketPerformancePanel buckets={state.bucket_performance || []} />
+              <NicheCopyPanel summary={state.niche_copy || {}} />
               <SignalBreakdown decisions={decisions} />
               <OrderbookPanel state={state} />
             </div>
@@ -104,6 +109,12 @@ export default function Dashboard({ state, onRefresh }) {
         {activeView === "fear" ? (
           <section className="contentGrid single">
             <FearSellerPanel summary={state.fear_seller || {}} />
+          </section>
+        ) : null}
+
+        {activeView === "copy" ? (
+          <section className="contentGrid single">
+            <NicheCopyPanel summary={state.niche_copy || {}} />
           </section>
         ) : null}
 
@@ -139,6 +150,7 @@ function titleFor(view) {
     risk: "Risk & Exposure",
     activity: "Trades & Logs",
     fear: "Fear Seller",
+    copy: "Top Trader Copy",
     settings: "Settings",
   };
   return titles[view] || "Command Center";

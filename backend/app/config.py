@@ -51,12 +51,25 @@ class Settings(BaseSettings):
     market_discovery_limit: int = 240
     market_scan_limit: int = 36
     max_paper_trades_per_cycle: int = 4
-    market_focus_keywords: str = (
-        "bitcoin,btc,ethereum,eth,solana,sol,crypto,weather,temperature,rain,snow,hurricane,storm"
-    )
-    market_bucket_order: str = "crypto_up,crypto_down,weather,crypto_fear,sports,politics,general"
+    market_focus_keywords: str = "bitcoin,btc,ethereum,eth,solana,sol,crypto,weather,temperature,rain,snow,hurricane,storm"
+    market_bucket_order: str = "crypto_up,crypto_down,weather"
+    market_allowed_buckets: str = "crypto_up,crypto_down,weather"
     learning_min_liquidity: float = 100.0
     learning_min_volume: float = 50.0
+    enable_niche_copy_trading: bool = True
+    require_niche_copy_confirmation: bool = True
+    copy_top_traders_per_bucket: int = 100
+    copy_trade_discovery_interval_seconds: int = 900
+    copy_trade_poll_seconds: int = 2
+    copy_trade_recent_seconds: int = 120
+    copy_trade_min_trader_score: float = 0.55
+    copy_trade_min_edge: float = 0.005
+    copy_trade_min_size: float = 5.0
+    copy_trade_discovery_trade_limit: int = 2000
+    copy_trade_discovery_candidate_limit: int = 250
+    copy_trade_positions_limit: int = 100
+    copy_signal_ttl_seconds: int = 30
+    copy_max_api_concurrency: int = 6
     audit_log_dir: str = "data/research_audit"
     external_probability_provider: Literal["mock", "metaculus"] = "mock"
     metaculus_cache_ttl_seconds: int = 900

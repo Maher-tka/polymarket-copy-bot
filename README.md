@@ -25,8 +25,9 @@ The bot is no longer only a copy-trading bot. The main research stack is:
 4. Optional smart-money tracking as a weak signal only
 5. Optional news/event signal, disabled by default until tested
 6. Optional Fear Seller strategy, disabled by default because of tail risk
+7. Optional niche top-trader copy signals for crypto up/down and weather only
 
-The scanner intentionally diversifies the paper research set across buckets like crypto up, crypto down, weather, sports, politics, and general markets. This lets the dashboard compare what is actually making or losing money instead of only learning from one or two similar positions.
+The scanner is currently narrowed to the two research niches requested: crypto up/down and weather. Top-trader discovery for those niches runs separately in the background, then the live paper loop reads only cached copy signals so large wallet ranking work does not slow down execution.
 
 Signal aggregation uses:
 
@@ -58,6 +59,20 @@ Safety defaults:
 - Rejects REAL mode if there is no live price feed.
 
 Test it in PAPER mode first. Do not use copy-trading links, wallet feeds, Telegram bots, or any single trader as a blind trading signal.
+
+## Niche Top-Trader Copy
+
+The optional niche copy module is designed for speed and separation:
+
+- It only watches crypto up/down and weather markets by default.
+- It discovers the top 50-100 public traders per niche in a background task.
+- It ranks traders from public Data API activity, recent PnL, volume, trade count, win rate, and recency.
+- The live strategy does not run discovery. It only consumes cached copy signals from approved traders.
+- It still checks spread, stale data, price movement since the source trade, score, edge, and the main `RiskEngine`.
+- With `REQUIRE_NICHE_COPY_CONFIRMATION=true`, crypto/weather trades are blocked unless a cached approved-trader signal confirms them.
+- It remains PAPER by default and does not need or expose private keys.
+
+This is not blind copy trading. Seeing a top trader buy is only one signal; the bot can still reject the trade when liquidity, spread, freshness, exposure, or edge is bad.
 
 ## Modes
 
@@ -121,7 +136,9 @@ The local PDF guide recommendations are reflected in these modules:
 - Research audit CSVs for every scored signal and paper fill: `backend/app/analytics/research_audit.py`
 - Optional cached Metaculus external probability provider, disabled by default: `backend/app/data/external_probability.py`
 - Recent trade-flow imbalance for microstructure when WebSocket trade events provide size/side: `backend/app/data/clob_ws.py`, `backend/app/strategy/microstructure.py`
-- Diversified market discovery and bucket performance learning: `backend/app/data/gamma_api.py`, `backend/app/core/bot_engine.py`
+- Niche-only market discovery for crypto up/down and weather: `backend/app/data/gamma_api.py`
+- Background top-trader discovery and cached copy signals: `backend/app/data/trader_discovery.py`, `backend/app/strategy/niche_copy_trading.py`
+- Bucket performance learning for the selected niches: `backend/app/core/bot_engine.py`
 
 The bot remains PAPER by default. The guide’s real-money signing examples were not enabled automatically.
 
@@ -255,7 +272,18 @@ MARKET_DISCOVERY_LIMIT=240
 MARKET_SCAN_LIMIT=36
 MAX_PAPER_TRADES_PER_CYCLE=4
 MARKET_FOCUS_KEYWORDS=bitcoin,btc,ethereum,eth,solana,sol,crypto,weather,temperature,rain,snow,hurricane,storm
-MARKET_BUCKET_ORDER=crypto_up,crypto_down,weather,crypto_fear,sports,politics,general
+MARKET_BUCKET_ORDER=crypto_up,crypto_down,weather
+MARKET_ALLOWED_BUCKETS=crypto_up,crypto_down,weather
+ENABLE_NICHE_COPY_TRADING=true
+REQUIRE_NICHE_COPY_CONFIRMATION=true
+COPY_TOP_TRADERS_PER_BUCKET=100
+COPY_TRADE_DISCOVERY_INTERVAL_SECONDS=900
+COPY_TRADE_POLL_SECONDS=2
+COPY_TRADE_MIN_TRADER_SCORE=0.55
+COPY_TRADE_MIN_EDGE=0.005
+COPY_TRADE_DISCOVERY_TRADE_LIMIT=2000
+COPY_TRADE_DISCOVERY_CANDIDATE_LIMIT=250
+COPY_SIGNAL_TTL_SECONDS=30
 ```
 
 ## Testing

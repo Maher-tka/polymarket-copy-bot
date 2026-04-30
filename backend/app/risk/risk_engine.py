@@ -40,7 +40,9 @@ class RiskEngine:
         reasons: list[str] = []
         adjusted_edge, edge_costs = self.cost_adjusted_edge(decision, market)
         is_fear_seller = decision.metadata.get("strategy") == "impossibility_seller"
-        min_edge = self.settings.imp_min_edge if is_fear_seller else self.settings.min_expected_edge
+        is_niche_copy = decision.metadata.get("strategy") == "niche_copy_trading"
+        niche_buckets = {bucket.strip() for bucket in self.settings.market_allowed_buckets.split(",") if bucket.strip()}
+        min_edge = self.settings.imp_min_edge if is_fear_seller else self.settings.copy_trade_min_edge if is_niche_copy else self.settings.min_expected_edge
         max_spread = self.settings.imp_max_spread if is_fear_seller else self.settings.max_spread
         min_liquidity = self.settings.imp_min_liquidity if is_fear_seller else self.settings.min_liquidity
         min_volume = self.settings.imp_min_volume if is_fear_seller else self.settings.min_volume
@@ -50,6 +52,14 @@ class RiskEngine:
             reasons.append("Bot is paused.")
         if decision.decision == Decision.HOLD:
             reasons.append("Signal aggregator decision is HOLD.")
+        if (
+            self.settings.enable_niche_copy_trading
+            and self.settings.require_niche_copy_confirmation
+            and market.research_bucket in niche_buckets
+            and decision.decision in {Decision.BUY_YES, Decision.BUY_NO}
+            and "niche_copy_trading" not in decision.components
+        ):
+            reasons.append("Top-trader copy confirmation required for niche-only mode.")
         score_threshold = self.settings.final_score_threshold
         if self.settings.bot_mode == "REAL":
             score_threshold = max(score_threshold, 0.65)
